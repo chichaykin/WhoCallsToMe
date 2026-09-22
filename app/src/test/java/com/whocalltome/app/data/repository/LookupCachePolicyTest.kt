@@ -155,6 +155,40 @@ class LookupCachePolicyTest {
         assertEquals(5, refreshed.spamScore)
         assertEquals(now + 2, refreshed.reputationExpiresAt)
         assertEquals(now + 10, refreshed.refreshExpiresAt)
+        assertEquals(
+            listOf("ipqs"),
+            LookupCachePolicy.providersNeedingLookup(
+                listOf(ipqs),
+                listOf(refreshed),
+                now + 2,
+                false,
+            ).map(NumberLookupProvider::id),
+        )
+    }
+
+    @Test
+    fun partialRefreshKeepsTheOriginalFieldFetchTimes() {
+        val previous = evidence(
+            source = "ipqs",
+            nameExpiresAt = now + 100,
+            reputationExpiresAt = now + 100,
+        ).copy(nameFetchedAt = now - 90, reputationFetchedAt = now - 80)
+
+        val refreshed = LookupCachePolicy.entityFor(
+            LookupResult(
+                e164 = previous.e164,
+                source = previous.source,
+                status = LookupStatus.FOUND,
+                displayName = "New caller name",
+                fetchedAt = now,
+                nameExpiresAt = now + 100,
+                refreshExpiresAt = now + 10,
+            ),
+            previous,
+        )
+
+        assertEquals(now, refreshed.nameFetchedAt)
+        assertEquals(now - 80, refreshed.reputationFetchedAt)
     }
 
     @Test

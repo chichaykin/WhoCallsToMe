@@ -5,6 +5,7 @@ import com.whocalltome.app.data.model.LookupResult
 import com.whocalltome.app.data.model.LookupStatus
 import com.whocalltome.app.data.model.NumberLookupProvider
 import com.whocalltome.app.data.settings.SecretStore
+import com.whocalltome.app.data.settings.AppPreferences
 import org.json.JSONObject
 import java.security.MessageDigest
 import java.util.Locale
@@ -163,10 +164,12 @@ class PhoneBlockLookupProvider(
 interface LookupProviderCatalog {
     fun provider(id: String): NumberLookupProvider?
     fun configuredProviders(): List<NumberLookupProvider>
+    fun automaticProviders(): List<NumberLookupProvider>
 }
 
 class LookupProviderRegistry(
     private val secrets: SecretStore,
+    private val preferences: AppPreferences,
     private val ipqs: IpqsLookupProvider,
     private val tellows: TellowsLookupProvider,
     private val phoneBlock: PhoneBlockLookupProvider,
@@ -182,6 +185,11 @@ class LookupProviderRegistry(
         listOf(ipqs, tellows, phoneBlock).filter { provider ->
             secrets.contains(secretKey(provider.id))
         }
+
+    override fun automaticProviders(): List<NumberLookupProvider> =
+        listOfNotNull(provider(preferences.lookupProvider), phoneBlock)
+            .distinctBy(NumberLookupProvider::id)
+            .filter { secrets.contains(secretKey(it.id)) }
 
     private fun secretKey(providerId: String): String = when (providerId) {
         ipqs.id -> SecretStore.IPQS_KEY

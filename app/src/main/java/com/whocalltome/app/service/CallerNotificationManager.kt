@@ -30,7 +30,7 @@ class CallerNotificationManager(private val context: Context) {
         )
     }
 
-    fun show(identity: CallerIdentity, blocked: Boolean) {
+    fun show(identity: CallerIdentity, blocked: Boolean, alert: Boolean = false) {
         if (
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
@@ -75,6 +75,7 @@ class CallerNotificationManager(private val context: Context) {
             .setPriority(Notification.PRIORITY_HIGH)
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
+            .setOnlyAlertOnce(!alert)
             .setTimeoutAfter(60_000)
             .build()
         manager.notify(identity.e164.hashCode(), notification)

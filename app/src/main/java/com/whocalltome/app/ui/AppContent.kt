@@ -398,7 +398,7 @@ private fun LookupScreen(viewModel: AppViewModel, initialNumber: String?) {
             }
         }
         (state as? LookupUiState.Ready)?.let { ready ->
-            IdentityCard(ready.identity, viewModel)
+            IdentityCard(ready.identity, viewModel, ready.providers, ready.isComplete)
             OutlinedButton(
                 onClick = { viewModel.lookupFresh(ready.identity.e164) },
                 enabled = state !is LookupUiState.Loading,
@@ -465,7 +465,12 @@ private fun formatLookupTime(timestamp: Long): String =
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun IdentityCard(identity: CallerIdentity, viewModel: AppViewModel) {
+private fun IdentityCard(
+    identity: CallerIdentity,
+    viewModel: AppViewModel,
+    providerStates: List<com.whocalltome.app.data.model.ProviderLookupStatus> = emptyList(),
+    isComplete: Boolean = true,
+) {
     val context = LocalContext.current
     val personalNumbers by viewModel.personalNumbers.collectAsState()
     var showEditor by remember { mutableStateOf(false) }
@@ -502,6 +507,25 @@ private fun IdentityCard(identity: CallerIdentity, viewModel: AppViewModel) {
             identity.externalReputations.forEach { reputation ->
                 reputation.score?.let { score ->
                     Text("Оценка ${providerLabel(reputation.source)}: $score")
+                }
+            }
+            if (providerStates.isNotEmpty() || !isComplete) {
+                HorizontalDivider()
+                Text(if (isComplete) "Состояние источников" else "Обновляем данные источников", style = MaterialTheme.typography.titleSmall)
+                providerStates.forEach { provider ->
+                    val detail = when (provider.status) {
+                        null -> "проверяется"
+                        com.whocalltome.app.data.model.LookupStatus.FOUND -> "данные обновлены"
+                        com.whocalltome.app.data.model.LookupStatus.NOT_FOUND -> "данных нет"
+                        com.whocalltome.app.data.model.LookupStatus.NETWORK_ERROR -> "нет сети"
+                        com.whocalltome.app.data.model.LookupStatus.QUOTA_EXHAUSTED -> "квота временно недоступна"
+                        com.whocalltome.app.data.model.LookupStatus.NOT_CONFIGURED -> "не настроен"
+                        com.whocalltome.app.data.model.LookupStatus.PROVIDER_ERROR -> "источник вернул ошибку"
+                    }
+                    Text("${providerLabel(provider.source)} · $detail", style = MaterialTheme.typography.bodySmall)
+                    provider.nextAttemptAt?.takeIf { it != Long.MAX_VALUE }?.let {
+                        Text("Повторная попытка: ${formatLookupTime(it)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
             HorizontalDivider()
@@ -945,9 +969,16 @@ private fun ProviderSettingsScreen(
     keys: KeyStatus,
 ) {
     val checkState by viewModel.providerCheck.collectAsState()
+    val selectedProvider by viewModel.lookupProvider.collectAsState()
     var testProvider by rememberSaveable { mutableStateOf<String?>(null) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Все источники с сохранёнными ключами проверяются параллельно. Повторная проверка использует кэш, пока ответ источника актуален.")
+        Text("Для автоматической проверки используется выбранный источник и PhoneBlock, если он подключён. Ручное обновление проверяет все подключённые источники, кроме временно приостановленных из-за ошибки или квоты.")
+        Text("Источник имени и основной проверки", style = MaterialTheme.typography.titleSmall)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("ipqs", "tellows").forEach { provider ->
+                ProviderChip(provider, providerLabel(provider), selectedProvider, viewModel::setLookupProvider)
+            }
+        }
         listOf("ipqs", "tellows", "phoneblock").forEach { provider ->
             ProviderSettingsCard(
                 viewModel = viewModel,

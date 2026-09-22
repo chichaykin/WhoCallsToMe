@@ -1,5 +1,7 @@
 package com.whocalltome.app.data.model
 
+import kotlinx.coroutines.flow.Flow
+
 enum class CallerCategory {
     CONTACT,
     INTERNET,
@@ -55,6 +57,13 @@ data class ExternalReputation(
     val isSpam: Boolean,
 )
 
+data class ProviderLookupStatus(
+    val source: String,
+    val status: LookupStatus? = null,
+    val message: String? = null,
+    val nextAttemptAt: Long? = null,
+)
+
 data class FeedSyncResult(
     val source: String,
     val cursor: String?,
@@ -88,6 +97,12 @@ data class CallerIdentity(
         get() = personalSpam || externalSpam || isSpam
 }
 
+data class LookupUpdate(
+    val identity: CallerIdentity,
+    val providers: List<ProviderLookupStatus> = emptyList(),
+    val isComplete: Boolean = false,
+)
+
 interface NumberLookupProvider {
     val id: String
     suspend fun lookup(e164: String): LookupResult
@@ -105,4 +120,11 @@ interface CallerIdentityRepository {
         allowNetworkForContacts: Boolean = false,
     ): CallerIdentity
     suspend fun resolveLocal(e164: String): CallerIdentity
+    fun resolveUpdates(
+        e164: String,
+        force: Boolean = false,
+        allowNetwork: Boolean = true,
+        allowNetworkForContacts: Boolean = false,
+        useAllConfiguredProviders: Boolean = false,
+    ): Flow<LookupUpdate>
 }

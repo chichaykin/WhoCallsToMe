@@ -39,6 +39,9 @@ interface AppDao {
     @Query("SELECT * FROM lookup_evidence WHERE e164 = :e164 ORDER BY fetchedAt DESC")
     suspend fun getEvidence(e164: String): List<LookupEvidenceEntity>
 
+    @Query("SELECT * FROM lookup_provider_state WHERE source = :source LIMIT 1")
+    suspend fun getProviderState(source: String): LookupProviderStateEntity?
+
     @Query("SELECT * FROM number_entries ORDER BY updatedAt DESC")
     suspend fun getAllNumberEntries(): List<NumberEntryEntity>
 
@@ -59,6 +62,12 @@ interface AppDao {
 
     @Upsert
     suspend fun upsertEvidence(value: LookupEvidenceEntity)
+
+    @Upsert
+    suspend fun upsertProviderState(value: LookupProviderStateEntity)
+
+    @Query("DELETE FROM lookup_provider_state WHERE source = :source")
+    suspend fun deleteProviderState(source: String)
 
     @Upsert
     suspend fun upsertSyncState(value: SyncStateEntity)

@@ -44,21 +44,36 @@ class WhoCallScreeningService : CallScreeningService() {
         }
 
         appContainer.applicationScope.launch {
-            val identity = if (blocked) {
-                localIdentity
-            } else {
-                appContainer.repository.resolve(
+            var identity = localIdentity
+            var previousWarning = localIdentity.shouldWarn
+            var firstNotification = true
+            if (!blocked) {
+                appContainer.repository.resolveUpdates(
                     e164 = e164,
                     allowNetwork = true,
                     allowNetworkForContacts = false,
-                )
+                ).collect { update ->
+                    identity = update.identity
+                    val becameWarning = !previousWarning && identity.shouldWarn
+                    previousWarning = identity.shouldWarn
+                    // The notification id is stable per number, so each partial answer updates
+                    // the same notification rather than creating another alert.
+                    if (incoming) {
+                        appContainer.notificationManager.show(
+                            identity = identity,
+                            blocked = false,
+                            alert = (firstNotification && identity.shouldWarn) || becameWarning,
+                        )
+                        firstNotification = false
+                    }
+                }
             }
             appContainer.repository.recordCall(
                 identity = identity,
                 direction = if (incoming) "INCOMING" else "OUTGOING",
                 blocked = blocked,
             )
-            if (incoming) appContainer.notificationManager.show(identity, blocked)
+            if (incoming && blocked) appContainer.notificationManager.show(identity, blocked, alert = true)
             Log.i(
                 TAG,
                 "resolved category=${identity.category} source=${identity.source} " +

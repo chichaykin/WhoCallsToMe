@@ -4,6 +4,7 @@ import android.net.Uri
 import com.whocalltome.app.data.db.AppDao
 import com.whocalltome.app.data.db.CallRecordEntity
 import com.whocalltome.app.data.db.LookupEvidenceEntity
+import com.whocalltome.app.data.db.LookupProviderStateEntity
 import com.whocalltome.app.data.db.ManualLookupEntity
 import com.whocalltome.app.data.db.NumberEntryEntity
 import com.whocalltome.app.data.db.UserOverrideEntity
@@ -14,22 +15,28 @@ import com.whocalltome.app.data.model.ExternalName
 import com.whocalltome.app.data.model.ExternalReputation
 import com.whocalltome.app.data.model.LookupStatus
 import com.whocalltome.app.data.model.LookupResult
+import com.whocalltome.app.data.model.LookupUpdate
+import com.whocalltome.app.data.model.ProviderLookupStatus
 import com.whocalltome.app.data.model.PersonalAction
 import com.whocalltome.app.data.phone.ContactLookup
 import com.whocalltome.app.data.remote.LookupProviderCatalog
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.last
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 
-private class NumberLookupLock(
-    val mutex: Mutex = Mutex(),
-    var users: Int = 0,
-)
-
+/** Kept internal so cache-policy tests can verify that a slow provider does not serialize peers. */
 internal suspend fun lookupProvidersInParallel(
     providers: List<com.whocalltome.app.data.model.NumberLookupProvider>,
     e164: String,
@@ -52,7 +59,13 @@ class AppCallerIdentityRepository(
     private val contactLookup: ContactLookup,
     private val providers: LookupProviderCatalog,
 ) : CallerIdentityRepository {
-    private val lookupLocks = ConcurrentHashMap<String, NumberLookupLock>()
+    private val lookupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val inFlightLookups = ConcurrentHashMap<String, Deferred<ProviderLookupStatus>>()
+
+    private companion object {
+        val RETRY_DELAYS_MILLIS = longArrayOf(60_000L, 5 * 60_000L, 15 * 60_000L, 60 * 60_000L)
+        const val QUOTA_DELAY_MILLIS = 60 * 60_000L
+    }
     suspend fun checkProvider(providerId: String, e164: String): LookupResult {
         val provider = providers.provider(providerId)
             ?: return LookupResult(e164, providerId, LookupStatus.PROVIDER_ERROR, message = "Неизвестный источник")
@@ -161,52 +174,177 @@ class AppCallerIdentityRepository(
         e164: String,
         allowNetwork: Boolean,
         allowNetworkForContacts: Boolean,
-    ): CallerIdentity {
-        val local = resolveLocal(e164)
-        if (!allowNetwork || (local.nameSource == "contacts" && !allowNetworkForContacts)) {
-            return local
-        }
-        lookupWithCache(e164, force = false)
-        return resolveLocal(e164)
-    }
+    ): CallerIdentity = resolveUpdates(
+        e164 = e164,
+        allowNetwork = allowNetwork,
+        allowNetworkForContacts = allowNetworkForContacts,
+    ).last().identity
 
     /** Runs every configured provider even when fresh evidence is already cached. */
     suspend fun resolveFresh(e164: String): ManualLookupOutcome {
-        val outcome = lookupWithCache(e164, force = true)
+        val updates = resolveUpdates(
+            e164 = e164,
+            force = true,
+            allowNetworkForContacts = true,
+            useAllConfiguredProviders = true,
+        ).toList()
+        val outcome = updates.last()
         return ManualLookupOutcome(
-            identity = resolveLocal(e164),
-            providerSucceeded = outcome.cachedCount > 0,
-            providerFailed = outcome.queriedCount > outcome.cachedCount,
+            identity = outcome.identity,
+            providerSucceeded = outcome.providers.any {
+                it.status == LookupStatus.FOUND || it.status == LookupStatus.NOT_FOUND
+            },
+            providerFailed = outcome.providers.any {
+                it.status != null && it.status !in setOf(LookupStatus.FOUND, LookupStatus.NOT_FOUND)
+            },
         )
     }
 
-    private suspend fun lookupWithCache(e164: String, force: Boolean): ProviderLookupOutcome {
-        val lookupLock = lookupLocks.compute(e164) { _, current ->
-            (current ?: NumberLookupLock()).also { it.users += 1 }
-        }!!
-        return try {
-            lookupLock.mutex.withLock {
-                val configured = providers.configuredProviders()
-                val needed = LookupCachePolicy.providersNeedingLookup(
-                    providers = configured,
-                    evidence = dao.getEvidence(e164),
-                    now = System.currentTimeMillis(),
-                    force = force,
-                )
-                val results = lookupProvidersInParallel(needed, e164)
-                    .filter { it.status == LookupStatus.FOUND || it.status == LookupStatus.NOT_FOUND }
-                results.forEach { result ->
-                    val previous = dao.getEvidence(e164).firstOrNull { it.source == result.source }
-                    dao.upsertEvidence(LookupCachePolicy.entityFor(result, previous))
-                }
-                ProviderLookupOutcome(queriedCount = needed.size, cachedCount = results.size)
+    override fun resolveUpdates(
+        e164: String,
+        force: Boolean,
+        allowNetwork: Boolean,
+        allowNetworkForContacts: Boolean,
+        useAllConfiguredProviders: Boolean,
+    ): Flow<LookupUpdate> = flow {
+        val local = resolveLocal(e164)
+        emit(LookupUpdate(local))
+        if (!allowNetwork || (local.nameSource == "contacts" && !allowNetworkForContacts)) {
+            emit(LookupUpdate(local, isComplete = true))
+            return@flow
+        }
+
+        val available = if (useAllConfiguredProviders) {
+            providers.configuredProviders()
+        } else {
+            providers.automaticProviders()
+        }
+        val needed = LookupCachePolicy.providersNeedingLookup(
+            providers = available,
+            evidence = dao.getEvidence(e164),
+            now = System.currentTimeMillis(),
+            force = force,
+        )
+        if (needed.isEmpty()) {
+            emit(LookupUpdate(resolveLocal(e164), isComplete = true))
+            return@flow
+        }
+
+        val updates = needed.map { ProviderLookupStatus(source = it.id) }.toMutableList()
+        emit(LookupUpdate(resolveLocal(e164), updates.toList()))
+        val channel = Channel<ProviderLookupStatus>(needed.size)
+        coroutineScope {
+            needed.forEach { provider ->
+                launch { channel.send(sharedLookup(provider, e164, force).await()) }
             }
-        } finally {
-            lookupLocks.compute(e164) { _, current ->
-                if (current === lookupLock && --lookupLock.users == 0) null else current
+            repeat(needed.size) {
+                val update = channel.receive()
+                val index = updates.indexOfFirst { it.source == update.source }
+                if (index >= 0) updates[index] = update else updates += update
+                emit(LookupUpdate(resolveLocal(e164), updates.toList()))
             }
         }
+        channel.close()
+        emit(LookupUpdate(resolveLocal(e164), updates, isComplete = true))
     }
+
+    private fun sharedLookup(
+        provider: com.whocalltome.app.data.model.NumberLookupProvider,
+        e164: String,
+        force: Boolean,
+    ): Deferred<ProviderLookupStatus> {
+        val key = "${provider.id}|$e164"
+        inFlightLookups[key]?.let { return it }
+        val created = lookupScope.async(start = CoroutineStart.LAZY) {
+            performLookup(provider, e164, force)
+        }
+        val existing = inFlightLookups.putIfAbsent(key, created)
+        if (existing != null) {
+            created.cancel()
+            return existing
+        }
+        created.invokeOnCompletion { inFlightLookups.remove(key, created) }
+        created.start()
+        return created
+    }
+
+    private suspend fun performLookup(
+        provider: com.whocalltome.app.data.model.NumberLookupProvider,
+        e164: String,
+        force: Boolean,
+    ): ProviderLookupStatus {
+        // A peer can complete after resolveUpdates selected this provider but before this
+        // deferred begins. Re-checking here avoids a second paid request in that window.
+        if (!force) {
+            val stillNeeded = LookupCachePolicy.providersNeedingLookup(
+                providers = listOf(provider),
+                evidence = dao.getEvidence(e164),
+                now = System.currentTimeMillis(),
+                force = false,
+            ).isNotEmpty()
+            if (!stillNeeded) return ProviderLookupStatus(provider.id)
+        }
+        val now = System.currentTimeMillis()
+        val state = dao.getProviderState(provider.id)
+        if (state != null && state.nextAttemptAt > now) {
+            return ProviderLookupStatus(
+                source = provider.id,
+                status = state.lastStatus?.let { runCatching { LookupStatus.valueOf(it) }.getOrNull() },
+                message = state.lastMessage,
+                nextAttemptAt = state.nextAttemptAt,
+            )
+        }
+        val result = try {
+            provider.lookup(e164)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Throwable) {
+            LookupResult(e164, provider.id, LookupStatus.NETWORK_ERROR, message = "Нет связи с источником")
+        }
+        if (result.status == LookupStatus.FOUND || result.status == LookupStatus.NOT_FOUND) {
+            val previous = dao.getEvidence(e164).firstOrNull { it.source == result.source }
+            dao.upsertEvidence(LookupCachePolicy.entityFor(result, previous))
+            dao.deleteProviderState(provider.id)
+            return ProviderLookupStatus(provider.id, result.status)
+        }
+
+        val nextAttemptAt = recordProviderFailure(provider.id, state, result)
+        return ProviderLookupStatus(provider.id, result.status, result.message, nextAttemptAt)
+    }
+
+    private suspend fun recordProviderFailure(
+        source: String,
+        previous: LookupProviderStateEntity?,
+        result: LookupResult,
+    ): Long {
+        val now = System.currentTimeMillis()
+        val permanent = result.status == LookupStatus.PROVIDER_ERROR &&
+            result.message?.contains("недейств", ignoreCase = true) == true
+        val failures = if (result.status == LookupStatus.QUOTA_EXHAUSTED || permanent) {
+            previous?.consecutiveFailures ?: 0
+        } else {
+            (previous?.consecutiveFailures ?: 0) + 1
+        }
+        val delay = when {
+            permanent -> Long.MAX_VALUE
+            result.status == LookupStatus.QUOTA_EXHAUSTED -> QUOTA_DELAY_MILLIS
+            else -> RETRY_DELAYS_MILLIS[(failures - 1).coerceIn(0, RETRY_DELAYS_MILLIS.lastIndex)]
+        }
+        val nextAttemptAt = if (delay == Long.MAX_VALUE) delay else now + delay
+        dao.upsertProviderState(
+            LookupProviderStateEntity(
+                source = source,
+                consecutiveFailures = failures,
+                nextAttemptAt = nextAttemptAt,
+                lastStatus = result.status.name,
+                lastMessage = result.message,
+                updatedAt = now,
+            ),
+        )
+        return nextAttemptAt
+    }
+
+    suspend fun clearProviderFailure(source: String) = dao.deleteProviderState(source)
 
     suspend fun savePersonalNumber(
         e164: String,
@@ -289,9 +427,4 @@ data class ManualLookupOutcome(
     val identity: CallerIdentity,
     val providerSucceeded: Boolean,
     val providerFailed: Boolean,
-)
-
-private data class ProviderLookupOutcome(
-    val queriedCount: Int,
-    val cachedCount: Int,
 )

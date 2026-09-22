@@ -42,6 +42,7 @@ internal object LookupCachePolicy {
         val hasNewReputation = result.spamScore != null || result.isSpam || !result.providerCategory.isNullOrBlank()
         val displayName = result.displayName ?: keepsPreviousName?.displayName
         val nameExpiresAt = result.nameExpiresAt ?: keepsPreviousName?.nameExpiresAt
+        val nameFetchedAt = if (result.displayName != null) result.fetchedAt else keepsPreviousName?.nameFetchedAt
         val spamScore = if (hasNewReputation) result.spamScore else keepsPreviousReputation?.spamScore
         val isSpam = if (hasNewReputation) result.isSpam else keepsPreviousReputation?.isSpam ?: false
         val providerCategory = if (hasNewReputation) {
@@ -54,6 +55,7 @@ internal object LookupCachePolicy {
         } else {
             keepsPreviousReputation?.reputationExpiresAt
         }
+        val reputationFetchedAt = if (hasNewReputation) result.fetchedAt else keepsPreviousReputation?.reputationFetchedAt
         val latestExpiry = listOfNotNull(
             nameExpiresAt,
             reputationExpiresAt,
@@ -74,6 +76,8 @@ internal object LookupCachePolicy {
             reputationExpiresAt = reputationExpiresAt,
             refreshExpiresAt = result.refreshExpiresAt,
             negativeExpiresAt = result.negativeExpiresAt,
+            nameFetchedAt = nameFetchedAt,
+            reputationFetchedAt = reputationFetchedAt,
         )
     }
 
@@ -81,13 +85,14 @@ internal object LookupCachePolicy {
         if (evidence == null) return false
         if (isNegativeFresh(evidence, now)) return true
         if (evidence.status != LookupStatus.FOUND.name) return false
-        evidence.refreshExpiresAt?.let { return it > now }
         val expiries = buildList {
             if (!evidence.displayName.isNullOrBlank()) add(nameExpiry(evidence))
             evidence.reputationExpiresAt?.let(::add)
                 ?: if (hasReputation(evidence)) add(reputationExpiry(evidence)) else Unit
         }
-        return expiries.isNotEmpty() && expiries.all { it > now }
+        return expiries.isNotEmpty() &&
+            expiries.all { it > now } &&
+            (evidence.refreshExpiresAt == null || evidence.refreshExpiresAt > now)
     }
 
     private fun nameExpiry(evidence: LookupEvidenceEntity): Long =

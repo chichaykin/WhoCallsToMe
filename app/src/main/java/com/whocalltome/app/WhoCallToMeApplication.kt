@@ -63,6 +63,7 @@ class AppContainer(application: Application) {
     private val httpClient = HttpClient()
     private val providerRegistry = LookupProviderRegistry(
         secrets = secretStore,
+        preferences = preferences,
         ipqs = IpqsLookupProvider(secretStore, httpClient),
         tellows = TellowsLookupProvider(secretStore, httpClient),
         phoneBlock = PhoneBlockLookupProvider(secretStore, httpClient),

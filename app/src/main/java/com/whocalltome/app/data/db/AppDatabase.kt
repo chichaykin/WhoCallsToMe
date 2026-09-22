@@ -16,8 +16,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SyncStateEntity::class,
         UserOverrideEntity::class,
         ManualLookupEntity::class,
+        LookupProviderStateEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -124,6 +125,27 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        internal val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE lookup_evidence ADD COLUMN nameFetchedAt INTEGER")
+                db.execSQL("ALTER TABLE lookup_evidence ADD COLUMN reputationFetchedAt INTEGER")
+                // A v6 row has no reliable field-level fetch times. Keep the name, but make
+                // reputation eligible for a refresh after at most one day.
+                db.execSQL(
+                    "UPDATE lookup_evidence SET reputationExpiresAt = " +
+                        "MIN(COALESCE(reputationExpiresAt, expiresAt), fetchedAt + 86400000) " +
+                        "WHERE reputationExpiresAt IS NOT NULL OR spamScore IS NOT NULL OR isSpam = 1 " +
+                        "OR (providerCategory IS NOT NULL AND TRIM(providerCategory) != '')",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS lookup_provider_state (" +
+                        "source TEXT NOT NULL, consecutiveFailures INTEGER NOT NULL, " +
+                        "nextAttemptAt INTEGER NOT NULL, lastStatus TEXT, lastMessage TEXT, " +
+                        "updatedAt INTEGER NOT NULL, PRIMARY KEY(source))",
+                )
+            }
+        }
+
         fun create(context: Context): AppDatabase =
             Room.databaseBuilder(
                 context.applicationContext,
@@ -135,6 +157,7 @@ abstract class AppDatabase : RoomDatabase() {
                 MIGRATION_3_4,
                 MIGRATION_4_5,
                 MIGRATION_5_6,
+                MIGRATION_6_7,
             ).build()
     }
 }

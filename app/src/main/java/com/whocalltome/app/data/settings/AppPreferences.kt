@@ -11,6 +11,10 @@ class AppPreferences(
         get() = ThemeMode.fromStored(preferences.getString(KEY_THEME_MODE, null))
         set(value) = preferences.edit().putString(KEY_THEME_MODE, value.id).apply()
 
+    var lookupProvider: String
+        get() = preferences.getString(KEY_LOOKUP_PROVIDER, DEFAULT_LOOKUP_PROVIDER) ?: DEFAULT_LOOKUP_PROVIDER
+        set(value) = preferences.edit().putString(KEY_LOOKUP_PROVIDER, value).apply()
+
     fun isSecretSuppressed(key: String): Boolean =
         preferences.getStringSet(KEY_SUPPRESSED_SECRETS, emptySet()).orEmpty().contains(key)
 
@@ -21,7 +25,9 @@ class AppPreferences(
     }
 
     companion object {
+        const val DEFAULT_LOOKUP_PROVIDER = "ipqs"
         private const val KEY_THEME_MODE = "theme_mode"
+        private const val KEY_LOOKUP_PROVIDER = "lookup_provider"
         private const val KEY_SUPPRESSED_SECRETS = "suppressed_default_secrets"
     }
 }

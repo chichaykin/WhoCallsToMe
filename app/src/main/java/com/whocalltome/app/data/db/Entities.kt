@@ -34,6 +34,20 @@ data class LookupEvidenceEntity(
     val reputationExpiresAt: Long? = null,
     val refreshExpiresAt: Long? = null,
     val negativeExpiresAt: Long? = null,
+    /** Null means the timestamp predates field-level tracking. */
+    val nameFetchedAt: Long? = null,
+    /** Null means the timestamp predates field-level tracking. */
+    val reputationFetchedAt: Long? = null,
+)
+
+@Entity(tableName = "lookup_provider_state")
+data class LookupProviderStateEntity(
+    @PrimaryKey val source: String,
+    val consecutiveFailures: Int = 0,
+    val nextAttemptAt: Long = 0,
+    val lastStatus: String? = null,
+    val lastMessage: String? = null,
+    val updatedAt: Long = System.currentTimeMillis(),
 )
 
 @Entity(

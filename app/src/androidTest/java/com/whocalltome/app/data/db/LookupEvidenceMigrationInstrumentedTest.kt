@@ -53,7 +53,7 @@ class LookupEvidenceMigrationInstrumentedTest {
     fun migrationPreservesExistingCacheAndSplitsItsExpiryByDataKind() {
         database.execSQL(
             "INSERT INTO lookup_evidence VALUES " +
-                "('+6500000000', 'ipqs', 'FOUND', 'Cached caller', 42, 0, 'mobile', 10, 100)",
+                "('+6500000000', 'ipqs', 'FOUND', 'Cached caller', 42, 0, 'mobile', 10, 172800010)",
         )
         database.execSQL(
             "INSERT INTO lookup_evidence VALUES " +
@@ -62,16 +62,28 @@ class LookupEvidenceMigrationInstrumentedTest {
 
         AppDatabase.MIGRATION_4_5.migrate(database)
         AppDatabase.MIGRATION_5_6.migrate(database)
+        AppDatabase.MIGRATION_6_7.migrate(database)
 
         database.query(
-            "SELECT nameExpiresAt, reputationExpiresAt, refreshExpiresAt, negativeExpiresAt " +
+            "SELECT nameExpiresAt, reputationExpiresAt, refreshExpiresAt, negativeExpiresAt, " +
+                "nameFetchedAt, reputationFetchedAt " +
                 "FROM lookup_evidence WHERE source = 'ipqs'",
         ).use { cursor ->
             cursor.moveToFirst()
-            assertEquals(100, cursor.getLong(0))
-            assertEquals(100, cursor.getLong(1))
-            assertEquals(100, cursor.getLong(2))
+            assertEquals(172800010, cursor.getLong(0))
+            assertEquals(86400010, cursor.getLong(1))
+            assertEquals(86400010, cursor.getLong(2))
             assertEquals(true, cursor.isNull(3))
+            assertEquals(true, cursor.isNull(4))
+            assertEquals(true, cursor.isNull(5))
+        }
+        database.query("SELECT reputationExpiresAt FROM lookup_evidence WHERE source = 'ipqs'").use { cursor ->
+            cursor.moveToFirst()
+            assertEquals(86400010, cursor.getLong(0))
+        }
+        database.query("SELECT COUNT(*) FROM lookup_provider_state").use { cursor ->
+            cursor.moveToFirst()
+            assertEquals(0, cursor.getInt(0))
         }
         database.query(
             "SELECT negativeExpiresAt FROM lookup_evidence WHERE source = 'phoneblock'",

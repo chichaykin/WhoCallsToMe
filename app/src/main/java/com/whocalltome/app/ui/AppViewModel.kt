@@ -17,6 +17,7 @@ import com.whocalltome.app.data.settings.SecretStore
 import com.whocalltome.app.data.settings.ThemeMode
 import com.whocalltome.app.data.model.LookupResult
 import com.whocalltome.app.data.model.LookupStatus
+import com.whocalltome.app.data.model.ProviderLookupStatus
 import com.whocalltome.app.export.ImportPreview
 import com.whocalltome.app.export.PreparedImport
 import com.whocalltome.app.export.ImportResult
@@ -29,6 +30,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.collect
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val container = application.appContainer
@@ -87,6 +89,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _themeMode = MutableStateFlow(container.preferences.themeMode)
     val themeMode = _themeMode.asStateFlow()
 
+    private val _lookupProvider = MutableStateFlow(container.preferences.lookupProvider)
+    val lookupProvider = _lookupProvider.asStateFlow()
+
     private val _providerCheck = MutableStateFlow<ProviderCheckState>(ProviderCheckState.Idle)
     val providerCheck = _providerCheck.asStateFlow()
 
@@ -104,9 +109,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         lookupJob = viewModelScope.launch {
             recordManualLookupSafely(e164)
             try {
-                _lookupState.value = LookupUiState.Ready(
-                    repository.resolve(e164, allowNetwork = true, allowNetworkForContacts = true),
-                )
+                repository.resolveUpdates(
+                    e164 = e164,
+                    allowNetwork = true,
+                    allowNetworkForContacts = true,
+                    useAllConfiguredProviders = false,
+                ).collect { update ->
+                    _lookupState.value = LookupUiState.Ready(update.identity, update.providers, update.isComplete)
+                }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -126,11 +136,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         lookupJob = viewModelScope.launch {
             recordManualLookupSafely(e164)
             try {
-                val outcome = repository.resolveFresh(e164)
-                _lookupState.value = LookupUiState.Ready(outcome.identity)
-                if (!outcome.providerSucceeded) {
+                val updates = mutableListOf<ProviderLookupStatus>()
+                var completed = false
+                repository.resolveUpdates(
+                    e164 = e164,
+                    force = true,
+                    allowNetworkForContacts = true,
+                    useAllConfiguredProviders = true,
+                ).collect { update ->
+                    updates.clear()
+                    updates += update.providers
+                    completed = update.isComplete
+                    _lookupState.value = LookupUiState.Ready(update.identity, updates.toList(), completed)
+                }
+                val succeeded = updates.any { it.status == LookupStatus.FOUND || it.status == LookupStatus.NOT_FOUND }
+                val failed = updates.any { it.status != null && it.status !in setOf(LookupStatus.FOUND, LookupStatus.NOT_FOUND) }
+                if (!succeeded && completed) {
                     _message.value = "Не удалось обновить данные источников; показан сохранённый результат"
-                } else if (outcome.providerFailed) {
+                } else if (failed) {
                     _message.value = "Не удалось обновить данные части источников; показан сохранённый результат"
                 }
             } catch (error: CancellationException) {
@@ -271,6 +294,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         _themeMode.value = value
     }
 
+    fun setLookupProvider(value: String) {
+        container.preferences.lookupProvider = value
+        _lookupProvider.value = value
+        _message.value = "Источник для автоматической проверки изменён"
+    }
+
     fun checkProvider(providerId: String, rawNumber: String) {
         val e164 = container.numberNormalizer.normalize(rawNumber)
         if (e164 == null) {
@@ -305,6 +334,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val key = secretKey(which)
         container.preferences.setSecretSuppressed(key, false)
         container.secretStore.put(key, value.trim())
+        viewModelScope.launch { repository.clearProviderFailure(which) }
         _keyStatus.value = readKeyStatus()
         _providerCheck.value = ProviderCheckState.Idle
         _message.value = "Ключ сохранён в Android Keystore"
@@ -420,7 +450,11 @@ data class ImportPreviewState(
 sealed interface LookupUiState {
     data object Idle : LookupUiState
     data object Loading : LookupUiState
-    data class Ready(val identity: CallerIdentity) : LookupUiState
+    data class Ready(
+        val identity: CallerIdentity,
+        val providers: List<ProviderLookupStatus> = emptyList(),
+        val isComplete: Boolean = true,
+    ) : LookupUiState
     data class Error(val message: String) : LookupUiState
 }
 
