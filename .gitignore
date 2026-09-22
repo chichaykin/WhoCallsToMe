@@ -7,3 +7,22 @@ build/
 app/build/
 captures/
 .DS_Store
+
+# Local credentials and signing material
+.env
+.env.*
+!.env.example
+*.secrets
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pem
+*.key
+credentials*.json
+google-services.json
+secrets/
+
+# Generated distribution artifacts
+*.apk
+*.aab
