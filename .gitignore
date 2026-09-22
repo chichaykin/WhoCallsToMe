@@ -1,0 +1,9 @@
+*.iml
+.gradle/
+.idea/
+local.properties
+docs/source-evaluation-private.csv
+build/
+app/build/
+captures/
+.DS_Store

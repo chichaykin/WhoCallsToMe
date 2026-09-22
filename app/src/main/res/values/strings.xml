@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WhoCallToMe</string>
+    <string name="calls_search_hint">Имя или номер</string>
+    <string name="calls_search">Поиск</string>
+    <string name="calls_clear_search">Очистить поиск</string>
+    <string name="calls_filter_description">Фильтр звонков: %1$s</string>
+    <string name="calls_all_filter">Все</string>
+    <string name="calls_all_compact_filter">Все звонки</string>
+    <string name="calls_filter_button">%1$s ▾</string>
+    <string name="calls_missed_filter">Пропущенные</string>
+    <string name="calls_spam_filter">Спам</string>
+    <string name="calls_blocked_filter">Заблокированные</string>
+    <string name="calls_empty">Журнал звонков пока пуст</string>
+    <string name="calls_no_missed">Пропущенных звонков нет</string>
+    <string name="calls_no_spam">Звонков с пометкой «Спам» нет</string>
+    <string name="calls_no_blocked">Заблокированных звонков нет. Правила для будущих звонков — в разделе «Мои правила».</string>
+    <string name="calls_no_results">Ничего не найдено</string>
+    <string name="calls_permission">Чтобы обновлять журнал звонков, разрешите доступ к нему.</string>
+    <string name="calls_permission_button">Разрешить доступ</string>
+    <string name="calls_saved_permission">Журнал сохранён, но обновление требует доступа</string>
+    <string name="calls_allow">Разрешить</string>
+    <string name="calls_import_error">Не удалось обновить журнал звонков</string>
+    <string name="calls_import_error_short">Не удалось обновить журнал</string>
+    <string name="calls_retry">Повторить</string>
+</resources>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="call_incoming_foreground">#8ADDBD</color>
+    <color name="call_incoming_container">#193B32</color>
+    <color name="call_outgoing_foreground">#B3C6FF</color>
+    <color name="call_outgoing_container">#253453</color>
+    <color name="call_missed_foreground">#FFADB7</color>
+    <color name="call_missed_container">#4B2930</color>
+    <color name="call_spam_foreground">#F6CB7D</color>
+    <color name="call_spam_container">#46371E</color>
+    <color name="call_blocked_foreground">#D5B6F5</color>
+    <color name="call_blocked_container">#3C2D4C</color>
+    <color name="call_neutral_foreground">#BAC9D9</color>
+    <color name="call_neutral_container">#2B3541</color>
+</resources>
