@@ -963,6 +963,64 @@ private fun configuredProviderLabels(keys: KeyStatus): String = listOfNotNull(
     "PhoneBlock".takeIf { keys.phoneBlockSaved },
 ).joinToString(", ")
 
+internal data class ProviderSetupLink(
+    val label: String,
+    val url: String,
+)
+
+internal data class ProviderSetupGuide(
+    val secretName: String,
+    val accessSummary: String,
+    val steps: List<String>,
+    val links: List<ProviderSetupLink>,
+)
+
+private val providerSetupGuides = mapOf(
+    "ipqs" to ProviderSetupGuide(
+        secretName = "API key",
+        accessSummary = "Бесплатно: создайте аккаунт и API key в личном кабинете.",
+        steps = listOf(
+            "Нажмите «Создать аккаунт» и зарегистрируйтесь в IPQualityScore.",
+            "После входа откройте раздел «API Keys».",
+            "Создайте новый ключ или скопируйте активный API key.",
+            "Вернитесь в приложение и вставьте ключ в поле ниже.",
+        ),
+        links = listOf(
+            ProviderSetupLink("Создать аккаунт", "https://www.ipqualityscore.com/create-account/phone-validation"),
+            ProviderSetupLink("Открыть API Keys", "https://www.ipqualityscore.com/user/api-keys"),
+        ),
+    ),
+    "tellows" to ProviderSetupGuide(
+        secretName = "apikey",
+        accessSummary = "Платный личный ключ на 2 года; актуальную цену смотрите на сайте.",
+        steps = listOf(
+            "Откройте страницу личного API-ключа tellows и оформите покупку.",
+            "После оплаты откройте раздел загрузок в своём аккаунте tellows.",
+            "Откройте данные доступа и скопируйте только значение apikey.",
+            "Не вставляйте URL целиком или partner=tellowskey; вернитесь в приложение и вставьте apikey в поле ниже.",
+        ),
+        links = listOf(
+            ProviderSetupLink("Открыть личный API-ключ tellows", "https://shop.tellows.de/en/tellows-api-key.html"),
+        ),
+    ),
+    "phoneblock" to ProviderSetupGuide(
+        secretName = "API token",
+        accessSummary = "Бесплатно: после входа создайте отдельный API token.",
+        steps = listOf(
+            "Откройте настройки PhoneBlock и войдите через Google или email.",
+            "В настройках создайте API token и скопируйте его.",
+            "Нужен именно API token, а не пароль аккаунта или CardDAV-токен.",
+            "Вернитесь в приложение и вставьте token в поле ниже.",
+        ),
+        links = listOf(
+            ProviderSetupLink("Открыть настройки PhoneBlock", "https://phoneblock.net/phoneblock/settings"),
+        ),
+    ),
+)
+
+internal fun providerSetupGuide(id: String): ProviderSetupGuide =
+    requireNotNull(providerSetupGuides[id]) { "Unknown provider: $id" }
+
 @Composable
 private fun ProviderSettingsScreen(
     viewModel: AppViewModel,
@@ -1001,8 +1059,10 @@ private fun ProviderSettingsCard(
     onTest: () -> Unit,
 ) {
     val context = LocalContext.current
+    val setupGuide = providerSetupGuide(provider)
     var key by rememberSaveable(provider) { mutableStateOf("") }
     var confirmDelete by rememberSaveable(provider) { mutableStateOf(false) }
+    var guideExpanded by rememberSaveable(provider) { mutableStateOf(false) }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(providerLabel(provider), style = MaterialTheme.typography.titleMedium)
@@ -1010,17 +1070,30 @@ private fun ProviderSettingsCard(
                 if (saved) "Подключён и участвует в проверках" else "Не подключён",
                 color = if (saved) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            OutlinedTextField(value = key, onValueChange = { key = it }, label = { Text("Новый ключ или токен") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
+            TextButton(onClick = { guideExpanded = !guideExpanded }) {
+                Text(if (guideExpanded) "Скрыть инструкцию" else "Как получить ключ")
+            }
+            if (guideExpanded) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(setupGuide.accessSummary, style = MaterialTheme.typography.bodySmall)
+                    setupGuide.steps.forEachIndexed { index, step ->
+                        Text("${index + 1}. $step", style = MaterialTheme.typography.bodySmall)
+                    }
+                    setupGuide.links.forEach { link ->
+                        TextButton(onClick = { context.startSafe(Intent(Intent.ACTION_VIEW, Uri.parse(link.url))) }) {
+                            Text(link.label)
+                        }
+                    }
+                }
+            }
+            OutlinedTextField(value = key, onValueChange = { key = it }, label = { Text("Новый ${setupGuide.secretName}") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
             Button(onClick = { viewModel.saveApiKey(provider, key); key = "" }, enabled = key.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Сохранить ключ") }
             OutlinedButton(onClick = onTest, enabled = saved, modifier = Modifier.fillMaxWidth()) { Text("Проверить подключение") }
             if (saved) TextButton(onClick = { confirmDelete = true }) { Text("Удалить ключ") }
-            TextButton(onClick = { context.startSafe(Intent(Intent.ACTION_VIEW, Uri.parse(providerUrl(provider)))) }) { Text("Открыть страницу источника") }
         }
     }
     if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, title = { Text("Удалить ключ?") }, text = { Text("${providerLabel(provider)} перестанет выполнять внешние проверки, пока ключ не будет добавлен снова.") }, confirmButton = { TextButton(onClick = { viewModel.clearApiKey(provider); confirmDelete = false }) { Text("Удалить") } }, dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Отмена") } })
 }
-
-private fun providerUrl(id: String): String = when (id) { "ipqs" -> "https://www.ipqualityscore.com/create-account/phone-validation"; "tellows" -> "https://shop.tellows.de/de/tellows-api-key.html"; else -> "https://phoneblock.net/phoneblock/settings" }
 
 @Composable
 private fun PermissionsSettingsScreen(
