@@ -18,7 +18,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ManualLookupEntity::class,
         LookupProviderStateEntity::class,
     ],
-    version = 7,
+    version = 9,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -146,6 +146,29 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        internal val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE number_entries_new (" +
+                        "e164 TEXT NOT NULL PRIMARY KEY, personalName TEXT NOT NULL, " +
+                        "numberType TEXT NOT NULL, category TEXT NOT NULL, " +
+                        "createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL)",
+                )
+                db.execSQL(
+                    "INSERT INTO number_entries_new(e164, personalName, numberType, category, createdAt, updatedAt) " +
+                        "SELECT e164, '', 'UNSPECIFIED', category, createdAt, updatedAt FROM number_entries",
+                )
+                db.execSQL("DROP TABLE number_entries")
+                db.execSQL("ALTER TABLE number_entries_new RENAME TO number_entries")
+            }
+        }
+
+        internal val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE call_records ADD COLUMN nameSource TEXT")
+            }
+        }
+
         fun create(context: Context): AppDatabase =
             Room.databaseBuilder(
                 context.applicationContext,
@@ -158,6 +181,8 @@ abstract class AppDatabase : RoomDatabase() {
                 MIGRATION_4_5,
                 MIGRATION_5_6,
                 MIGRATION_6_7,
+                MIGRATION_7_8,
+                MIGRATION_8_9,
             ).build()
     }
 }

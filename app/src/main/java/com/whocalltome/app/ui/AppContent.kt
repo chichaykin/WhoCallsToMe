@@ -4,7 +4,6 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.provider.ContactsContract
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,7 +29,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -48,7 +46,6 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -62,6 +59,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -95,7 +93,7 @@ import kotlinx.coroutines.launch
 private enum class AppTab(val title: String, val screenTitle: String, val icon: Int) {
     CALLS("Звонки", "Звонки", R.drawable.ic_phone),
     LOOKUP("Проверка", "Проверить номер", R.drawable.ic_search),
-    PERSONAL("Мои правила", "Правила для номеров", R.drawable.ic_rules),
+    PERSONAL("Мои номера", "Мои номера", R.drawable.ic_rules),
     SETTINGS("Настройки", "Настройки", R.drawable.ic_settings),
 }
 
@@ -123,17 +121,20 @@ fun AppContent(
     onRequestCallLogPermission: () -> Unit,
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(if (initialNumber == null) AppTab.CALLS else AppTab.LOOKUP) }
+    var selectedNumber by rememberSaveable { mutableStateOf<String?>(null) }
     var settingsRoute by rememberSaveable { mutableStateOf(SettingsRoute.HOME) }
     val returnToSettingsHome = {
         settingsRoute = SettingsRoute.HOME
     }
-    BackHandler(enabled = selectedTab == AppTab.SETTINGS && settingsRoute != SettingsRoute.HOME) {
+    BackHandler(enabled = selectedNumber == null && selectedTab == AppTab.SETTINGS && settingsRoute != SettingsRoute.HOME) {
         returnToSettingsHome()
     }
     var callsSearch by rememberSaveable { mutableStateOf("") }
     var callsFilterId by rememberSaveable { mutableStateOf(CallFilter.ALL.id) }
     val callsListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    val tabStateHolder = rememberSaveableStateHolder()
     val callsFilter = CallFilter.fromId(callsFilterId)
+    val compactNavigation = LocalDensity.current.fontScale >= 1.3f
     val callsListScope = rememberCoroutineScope()
     val changeCallsFilter: (CallFilter) -> Unit = { newFilter ->
         if (newFilter != callsFilter) {
@@ -168,6 +169,7 @@ fun AppContent(
 
     Scaffold(
         topBar = {
+            if (selectedNumber == null) {
             BoxWithConstraints(Modifier.fillMaxWidth()) {
                 val compactCallsHeader = selectedTab == AppTab.CALLS &&
                     (maxWidth < 360.dp || LocalDensity.current.fontScale >= 1.5f)
@@ -212,9 +214,11 @@ fun AppContent(
                     },
                 )
             }
+            }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
+            if (selectedNumber == null) {
             NavigationBar {
                 AppTab.entries.forEach { tab ->
                     NavigationBarItem(
@@ -229,13 +233,32 @@ fun AppContent(
                                 contentDescription = tab.title,
                             )
                         },
-                        label = { Text(tab.title) },
+                        label = {
+                            Text(if (compactNavigation) when (tab) {
+                                AppTab.CALLS -> "Звонки"
+                                AppTab.LOOKUP -> "Поиск"
+                                AppTab.PERSONAL -> "Мои"
+                                AppTab.SETTINGS -> "Опции"
+                            } else tab.title, maxLines = 1)
+                        },
                     )
                 }
+            }
             }
         },
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
+            if (selectedNumber != null) {
+                NumberProfileScreen(
+                    number = selectedNumber!!,
+                    viewModel = viewModel,
+                    roleHeld = roleHeld,
+                    onRequestRole = onRequestRole,
+                    onBack = { selectedNumber = null },
+                    onOpenExisting = { selectedNumber = it },
+                )
+            } else {
+            tabStateHolder.SaveableStateProvider(selectedTab) {
             when (selectedTab) {
                 AppTab.CALLS -> CallsScreen(
                     viewModel = viewModel,
@@ -245,12 +268,14 @@ fun AppContent(
                     listState = callsListState,
                     callLogPermissionGranted = callLogPermissionGranted,
                     onRequestCallLogPermission = onRequestCallLogPermission,
+                    onOpenNumber = { selectedNumber = it },
                 )
-                AppTab.LOOKUP -> LookupScreen(viewModel, initialNumber)
+                AppTab.LOOKUP -> LookupScreen(viewModel, initialNumber, roleHeld, onOpenNumber = { selectedNumber = it })
                 AppTab.PERSONAL -> PersonalNumbersScreen(
                     viewModel = viewModel,
                     roleHeld = roleHeld,
                     onRequestRole = onRequestRole,
+                    onOpenNumber = { selectedNumber = it },
                 )
                 AppTab.SETTINGS -> SettingsScreen(
                     viewModel = viewModel,
@@ -264,6 +289,8 @@ fun AppContent(
                     route = settingsRoute,
                     onRouteChange = { settingsRoute = it },
                 )
+            }
+            }
             }
         }
     }
@@ -324,11 +351,21 @@ private fun CallsFilterMenu(
 }
 
 @Composable
-private fun LookupScreen(viewModel: AppViewModel, initialNumber: String?) {
+private fun LookupScreen(viewModel: AppViewModel, initialNumber: String?, roleHeld: Boolean, onOpenNumber: (String) -> Unit) {
     var number by remember(initialNumber) { mutableStateOf(initialNumber.orEmpty()) }
     val state by viewModel.lookupState.collectAsState()
     val recentLookups by viewModel.recentLookups.collectAsState()
+    val personalNumbers by viewModel.personalNumbers.collectAsState()
     val keys by viewModel.keyStatus.collectAsState()
+    val ready = state as? LookupUiState.Ready
+    var displayedIdentity by remember(ready?.identity) { mutableStateOf(ready?.identity) }
+    LaunchedEffect(ready?.identity?.e164, personalNumbers) {
+        ready?.identity?.e164?.let { e164 ->
+            viewModel.loadIdentity(e164) { current ->
+                if (current != null) displayedIdentity = current
+            }
+        }
+    }
     var showClearHistory by rememberSaveable { mutableStateOf(false) }
     val normalizedNumber = viewModel.normalizeNumber(number)
     val inputError = number.isNotBlank() && normalizedNumber == null
@@ -341,7 +378,7 @@ private fun LookupScreen(viewModel: AppViewModel, initialNumber: String?) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(
-            "Сначала проверяются данные на устройстве. При внешнем запросе номер может передаваться источникам: $externalSources. Результаты и история остаются на устройстве.",
+            "Сначала проверяем данные на устройстве. При онлайн-проверке номер передаётся источникам: $externalSources. История остаётся на устройстве.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -356,7 +393,7 @@ private fun LookupScreen(viewModel: AppViewModel, initialNumber: String?) {
             modifier = Modifier.fillMaxWidth().semantics { if (inputError) error(numberError) },
             isError = inputError,
             supportingText = {
-                Text(if (inputError) numberError else "Можно ввести местный номер или номер с кодом страны")
+                if (inputError) Text(numberError)
             },
             keyboardOptions = KeyboardOptions(
                 keyboardType = KeyboardType.Phone,
@@ -397,13 +434,15 @@ private fun LookupScreen(viewModel: AppViewModel, initialNumber: String?) {
                 }
             }
         }
-        (state as? LookupUiState.Ready)?.let { ready ->
-            IdentityCard(ready.identity, viewModel, ready.providers, ready.isComplete)
-            OutlinedButton(
-                onClick = { viewModel.lookupFresh(ready.identity.e164) },
-                enabled = state !is LookupUiState.Loading,
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Обновить данные источников") }
+        ready?.let { result ->
+            IdentityCard(
+                identity = displayedIdentity ?: result.identity,
+                providerStates = result.providers,
+                isComplete = result.isComplete,
+                roleHeld = roleHeld,
+                onOpenNumber = onOpenNumber,
+                onRefresh = { viewModel.lookupFresh(result.identity.e164) },
+            )
         }
 
         if (recentLookups.isNotEmpty()) {
@@ -418,6 +457,7 @@ private fun LookupScreen(viewModel: AppViewModel, initialNumber: String?) {
                 }
             }
             recentLookups.forEach { lookup ->
+                val savedName = personalNumbers.firstOrNull { it.e164 == lookup.e164 }?.displayName
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -427,7 +467,10 @@ private fun LookupScreen(viewModel: AppViewModel, initialNumber: String?) {
                         },
                 ) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(lookup.e164, style = MaterialTheme.typography.bodyLarge)
+                        Text(savedName ?: lookup.e164, style = MaterialTheme.typography.bodyLarge)
+                        if (savedName != null) {
+                            Text(lookup.e164, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                         Text(
                             "Проверено: ${formatLookupTime(lookup.lastAttemptAt)}",
                             style = MaterialTheme.typography.bodySmall,
@@ -463,55 +506,90 @@ private fun formatLookupTime(timestamp: Long): String =
         java.text.DateFormat.SHORT,
     ).format(java.util.Date(timestamp))
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun IdentityCard(
     identity: CallerIdentity,
-    viewModel: AppViewModel,
-    providerStates: List<com.whocalltome.app.data.model.ProviderLookupStatus> = emptyList(),
-    isComplete: Boolean = true,
+    providerStates: List<com.whocalltome.app.data.model.ProviderLookupStatus>,
+    isComplete: Boolean,
+    roleHeld: Boolean,
+    onOpenNumber: (String) -> Unit,
+    onRefresh: () -> Unit,
 ) {
-    val context = LocalContext.current
-    val personalNumbers by viewModel.personalNumbers.collectAsState()
-    var showEditor by remember { mutableStateOf(false) }
+    var detailsExpanded by rememberSaveable(identity.e164) { mutableStateOf(false) }
+    val failedSource = providerStates.any { provider ->
+        provider.status in setOf(
+            com.whocalltome.app.data.model.LookupStatus.NETWORK_ERROR,
+            com.whocalltome.app.data.model.LookupStatus.PROVIDER_ERROR,
+            com.whocalltome.app.data.model.LookupStatus.QUOTA_EXHAUSTED,
+        )
+    }
     Card(
-        colors = if (identity.isSpam) {
-            CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
-        } else {
-            CardDefaults.cardColors()
-        },
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth(),
     ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(identity.displayName ?: "Имя не найдено", style = MaterialTheme.typography.titleLarge)
-            Text(identity.e164)
-            CategoryLabel(identity.category)
-            identity.personalAction.takeIf { it != PersonalAction.DEFAULT }?.let { action ->
-                Text(
-                    if (action == PersonalAction.BLOCK) "Заблокирован вашим правилом" else "Разрешён вашим правилом",
-                    color = MaterialTheme.colorScheme.primary,
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Icon(
+                    painter = painterResource(
+                        if (identity.numberType == com.whocalltome.app.data.model.NumberType.BUSINESS) R.drawable.ic_business
+                        else R.drawable.ic_person,
+                    ),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(40.dp),
                 )
-            }
-            if (identity.personalSpam) Text("Моя метка: спам", color = MaterialTheme.colorScheme.error)
-            if (identity.externalSpam) {
-                Text(
-                    "Возможный спам · ${identity.externalReputations.filter { it.isSpam }.joinToString(", ") { providerLabel(it.source) }}",
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-            if (identity.externalNames.map { it.value }.distinct().size > 1) {
-                Text("Имена по данным источников", style = MaterialTheme.typography.titleSmall)
-                identity.externalNames.forEach { externalName ->
-                    Text("${providerLabel(externalName.source)} · ${externalName.value}")
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        identity.displayName ?: "Имя не найдено",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(identity.e164, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            identity.externalReputations.forEach { reputation ->
-                reputation.score?.let { score ->
-                    Text("Оценка ${providerLabel(reputation.source)}: $score")
+            if (identity.displayName != null && identity.category != CallerCategory.SPAM) CategoryLabel(identity.category)
+            if (identity.personalAction == PersonalAction.BLOCK) {
+                Text(
+                    if (roleHeld) "Блокировка включена" else "Блокировка настроена — включите определение звонков",
+                    color = if (roleHeld) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            } else if (identity.personalAction == PersonalAction.ALLOW) {
+                Text("Звонки разрешены", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (identity.shouldWarn) {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Возможный спам", color = MaterialTheme.colorScheme.onErrorContainer, fontWeight = FontWeight.SemiBold)
+                        if (identity.personalSpam) Text("Помечено вами", color = MaterialTheme.colorScheme.onErrorContainer)
+                        if (identity.externalSpam) {
+                            Text(
+                                "По данным: ${identity.externalReputations.filter { it.isSpam }.joinToString(", ") { providerLabel(it.source) }.ifBlank { identity.externalSource?.let(::providerLabel) ?: "внешнего источника" }}",
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                            )
+                        }
+                    }
                 }
             }
-            if (providerStates.isNotEmpty() || !isComplete) {
-                HorizontalDivider()
-                Text(if (isComplete) "Состояние источников" else "Обновляем данные источников", style = MaterialTheme.typography.titleSmall)
+            Button(onClick = { onOpenNumber(identity.e164) }, modifier = Modifier.fillMaxWidth()) {
+                Text("Открыть карточку номера")
+            }
+            if (!isComplete) Text("Проверяем источники…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            else if (failedSource) Text("Часть источников недоступна", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            HorizontalDivider()
+            TextButton(onClick = { detailsExpanded = !detailsExpanded }) {
+                Text(if (detailsExpanded) "Скрыть данные источников ▴" else "Данные источников ▾")
+            }
+            if (detailsExpanded) {
+                if (identity.externalNames.size > 1) {
+                    Text("Имена от источников", style = MaterialTheme.typography.titleSmall)
+                    identity.externalNames.forEach { source ->
+                        Text("${providerLabel(source.source)} · ${source.value}")
+                    }
+                }
+                identity.externalReputations.forEach { reputation ->
+                    reputation.score?.let { score -> Text("Оценка ${providerLabel(reputation.source)}: $score") }
+                }
                 providerStates.forEach { provider ->
                     val detail = when (provider.status) {
                         null -> "проверяется"
@@ -523,50 +601,24 @@ private fun IdentityCard(
                         com.whocalltome.app.data.model.LookupStatus.PROVIDER_ERROR -> "источник вернул ошибку"
                     }
                     Text("${providerLabel(provider.source)} · $detail", style = MaterialTheme.typography.bodySmall)
-                    provider.nextAttemptAt?.takeIf { it != Long.MAX_VALUE }?.let {
-                        Text("Повторная попытка: ${formatLookupTime(it)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    provider.nextAttemptAt?.takeIf { it != Long.MAX_VALUE }?.let { timestamp ->
+                        Text(
+                            "Повторная попытка: ${formatLookupTime(timestamp)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
-            }
-            HorizontalDivider()
-            NumberActionButtons(
-                context = context,
-                e164 = identity.e164,
-                name = identity.displayName,
-                existingContact = identity.nameSource == "contacts",
-                resolveContactUri = { viewModel.findContactUri(identity.e164) },
-            )
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { showEditor = true }) {
-                    Text("Личное правило")
-                }
-                OutlinedButton(onClick = { viewModel.setAction(identity.e164, PersonalAction.BLOCK) }) {
-                    Text("Блокировать")
-                }
-                OutlinedButton(onClick = {
-                    viewModel.markSpam(identity.e164, !identity.personalSpam)
-                }) {
-                    Text(if (identity.personalSpam) "Снять мою метку" else "Это спам")
+                OutlinedButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
+                    Text("Обновить данные источников")
                 }
             }
         }
     }
-    if (showEditor) {
-        PersonalNumberDialog(
-            viewModel = viewModel,
-            initial = personalNumbers.firstOrNull { it.e164 == identity.e164 },
-            numberSeed = identity.e164,
-            onDismiss = { showEditor = false },
-            onOpenExisting = { showEditor = false },
-        )
-    }
 }
 
 private enum class PersonalFilter(val label: String) {
-    ALL("Все"),
-    BLOCKED("Заблокированные"),
-    ALLOWED("Разрешённые"),
-    SPAM("Мой спам"),
+    ALL("Все"), BLOCKED("Заблокированные"), SPAM("Спам")
 }
 
 @Composable
@@ -574,288 +626,96 @@ private fun PersonalNumbersScreen(
     viewModel: AppViewModel,
     roleHeld: Boolean,
     onRequestRole: () -> Unit,
+    onOpenNumber: (String) -> Unit,
 ) {
     val numbers by viewModel.personalNumbers.collectAsState()
     var search by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf(PersonalFilter.ALL) }
-    var editorItem by remember { mutableStateOf<PersonalNumberUi?>(null) }
-    var showEditor by rememberSaveable { mutableStateOf(false) }
     val visible = numbers.filter { item ->
-        val query = search.trim().lowercase()
-        val matchesSearch = query.isBlank() || listOf(item.e164, item.note)
-            .any { it.lowercase().contains(query) }
-        val matchesFilter = when (filter) {
-            PersonalFilter.ALL -> true
-            PersonalFilter.BLOCKED -> item.action == PersonalAction.BLOCK
-            PersonalFilter.ALLOWED -> item.action == PersonalAction.ALLOW
-            PersonalFilter.SPAM -> item.personalSpam
-        }
-        matchesSearch && matchesFilter
+        val query = search.trim()
+        (query.isBlank() || item.e164.contains(query) || item.displayName?.contains(query, ignoreCase = true) == true ||
+            item.personalName.contains(query, ignoreCase = true)) &&
+            when (filter) {
+                PersonalFilter.ALL -> true
+                PersonalFilter.BLOCKED -> item.action == PersonalAction.BLOCK
+                PersonalFilter.SPAM -> item.personalSpam
+            }
     }
-
-    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        Text(
-            "Имя берётся из книги контактов. Здесь настраиваются правила для номера",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(bottom = 10.dp),
-        )
-        if (!roleHeld) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-                modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
-            ) {
-                Row(
-                    Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text("Чтобы блокировка работала, включите определение звонков для приложения", Modifier.weight(1f))
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(bottom = 16.dp),
+    ) {
+        item {
+            Button(onClick = { onOpenNumber("") }, modifier = Modifier.fillMaxWidth()) {
+                Text("Добавить номер")
+            }
+        }
+        if (!roleHeld) item {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                Column(Modifier.padding(12.dp)) {
+                    Text("Для блокировки включите определение звонков")
                     TextButton(onClick = onRequestRole) { Text("Включить") }
                 }
             }
         }
-        Button(
-            onClick = {
-                editorItem = null
-                showEditor = true
-            },
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text("Добавить номер") }
-        Text(
-            "Номера, заметки и правила хранятся на этом устройстве",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 8.dp, bottom = 8.dp),
-        )
-
         if (numbers.isEmpty()) {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Пока нет личных правил", style = MaterialTheme.typography.titleMedium)
-                    Text("Заметка — личная информация о номере только в этом приложении.")
-                    Text("Спам-метка — предупреждение без блокировки.")
-                    Text("Разрешение или блокировка — правило для входящих звонков.")
-                    Text("Имя берётся из книги контактов. Здесь настраиваются правила для номера.")
-                }
-            }
+            item { EmptyState("Сохраняйте имена незнакомых номеров и управляйте блокировкой") }
         } else {
-            OutlinedTextField(
-                value = search,
-                onValueChange = { search = it },
-                label = { Text("Поиск по имени, номеру или заметке") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-            )
-            androidx.compose.foundation.layout.FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.padding(bottom = 8.dp),
-            ) {
-                PersonalFilter.entries.forEach { option ->
-                    FilterChip(
-                        selected = option == filter,
-                        onClick = { filter = option },
-                        label = { Text(option.label) },
-                    )
+            item {
+                OutlinedTextField(
+                    value = search,
+                    onValueChange = { search = it },
+                    label = { Text("Поиск по имени или номеру") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            item {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PersonalFilter.entries.forEach { option ->
+                        FilterChip(selected = filter == option, onClick = { filter = option }, label = { Text(option.label) })
+                    }
                 }
             }
             if (visible.isEmpty()) {
-                EmptyState("По заданным условиям правила не найдены")
+                item { EmptyState("Номера не найдены") }
             } else {
-                LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
-                    items(visible, key = PersonalNumberUi::e164) { item ->
-                        PersonalNumberCard(
-                            item = item,
-                            onEdit = {
-                                editorItem = item
-                                showEditor = true
-                            },
-                            onDelete = { viewModel.deletePersonal(item.e164) },
-                            onAction = { viewModel.setAction(item.e164, it) },
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    if (showEditor) {
-        PersonalNumberDialog(
-            viewModel = viewModel,
-            initial = editorItem,
-            onDismiss = { showEditor = false },
-            onOpenExisting = { existing ->
-                editorItem = existing
-                showEditor = true
-            },
-        )
-    }
-}
-
-@Composable
-private fun PersonalNumberCard(
-    item: PersonalNumberUi,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit,
-    onAction: (PersonalAction) -> Unit,
-) {
-    var menuOpen by remember { mutableStateOf(false) }
-    Card(
-        onClick = onEdit,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(verticalAlignment = Alignment.Top) {
-                Column(Modifier.weight(1f)) {
-                    Text(item.e164, fontWeight = FontWeight.SemiBold)
-                }
-                Box {
-                    IconButton(onClick = { menuOpen = true }) {
-                        Text(
-                            "⋮",
-                            style = MaterialTheme.typography.titleLarge,
-                            modifier = Modifier.semantics { contentDescription = "Действия с правилом" },
-                        )
-                    }
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(
-                            text = { Text("Изменить") },
-                            onClick = { menuOpen = false; onEdit() },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Удалить") },
-                            onClick = { menuOpen = false; onDelete() },
-                        )
-                    }
-                }
-            }
-            if (item.note.isNotBlank()) Text(item.note)
-            Text(
-                when (item.action) {
-                    PersonalAction.DEFAULT -> "Без особого правила"
-                    PersonalAction.ALLOW -> "Разрешён"
-                    PersonalAction.BLOCK -> "Заблокирован"
-                },
-                color = MaterialTheme.colorScheme.primary,
-                style = MaterialTheme.typography.labelLarge,
-            )
-            if (item.personalSpam) {
-                Text("Моя метка: спам", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelLarge)
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (item.action != PersonalAction.ALLOW) {
-                    AssistChip(onClick = { onAction(PersonalAction.ALLOW) }, label = { Text("Разрешить") })
-                }
-                if (item.action != PersonalAction.BLOCK) {
-                    AssistChip(onClick = { onAction(PersonalAction.BLOCK) }, label = { Text("Блокировать") })
-                }
-                if (item.action != PersonalAction.DEFAULT) {
-                    AssistChip(onClick = { onAction(PersonalAction.DEFAULT) }, label = { Text("Снять правило") })
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PersonalNumberDialog(
-    viewModel: AppViewModel,
-    initial: PersonalNumberUi?,
-    numberSeed: String? = null,
-    onDismiss: () -> Unit,
-    onOpenExisting: (PersonalNumberUi) -> Unit,
-) {
-    val formKey = initial?.e164 ?: numberSeed.orEmpty()
-    var number by rememberSaveable(formKey) { mutableStateOf(initial?.e164 ?: numberSeed.orEmpty()) }
-    var note by rememberSaveable(initial?.e164) { mutableStateOf(initial?.note.orEmpty()) }
-    var action by rememberSaveable(initial?.e164) { mutableStateOf(initial?.action ?: PersonalAction.DEFAULT) }
-    var spam by rememberSaveable(initial?.e164) { mutableStateOf(initial?.personalSpam ?: false) }
-    var saving by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var duplicate by remember { mutableStateOf<PersonalNumberUi?>(null) }
-
-    AlertDialog(
-        onDismissRequest = { if (!saving) onDismiss() },
-        title = { Text(if (initial == null) "Добавить правило" else "Изменить правило") },
-        text = {
-            Column(
-                Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedTextField(
-                    value = number,
-                    onValueChange = { number = it; error = null },
-                    label = { Text("Номер") },
-                    singleLine = true,
-                    enabled = initial == null,
-                    isError = error != null,
-                    supportingText = error?.let { message -> { Text(message) } },
-                )
-                OutlinedTextField(note, { note = it }, label = { Text("Заметка (необязательно)") })
-                Text("Обработка звонков", style = MaterialTheme.typography.titleSmall)
-                PersonalAction.entries.forEach { option ->
-                    val label = when (option) {
-                        PersonalAction.DEFAULT -> "Без особого правила"
-                        PersonalAction.ALLOW -> "Разрешать"
-                        PersonalAction.BLOCK -> "Блокировать"
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(selected = action == option, onClick = { action = option })
-                        Column {
-                            Text(label)
-                            if (option == PersonalAction.DEFAULT) Text("Предупреждения о спаме остаются", style = MaterialTheme.typography.bodySmall)
-                            if (option == PersonalAction.ALLOW) Text("Разрешает звонки, но оставляет предупреждения", style = MaterialTheme.typography.bodySmall)
-                            if (option == PersonalAction.BLOCK) Text("Отклоняет входящие звонки", style = MaterialTheme.typography.bodySmall)
+                items(visible, key = PersonalNumberUi::e164) { item ->
+                    var menuOpen by remember { mutableStateOf(false) }
+                    Card(onClick = { onOpenNumber(item.e164) }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text(item.displayName ?: item.e164, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                                if (item.displayName != null) Text(item.e164, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                val typeLabel = when (item.numberType) {
+                                    com.whocalltome.app.data.model.NumberType.PERSONAL -> "Личный"
+                                    com.whocalltome.app.data.model.NumberType.BUSINESS -> "Бизнес"
+                                    else -> null
+                                }
+                                if (typeLabel != null) Text(typeLabel, style = MaterialTheme.typography.labelMedium)
+                                if (item.action == PersonalAction.BLOCK) {
+                                    Text(
+                                        if (roleHeld) "Заблокирован" else "Блокировка настроена",
+                                        color = if (roleHeld) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                if (item.personalSpam) Text("Моя пометка: спам", color = MaterialTheme.colorScheme.error)
+                            }
+                            Box {
+                                IconButton(onClick = { menuOpen = true }) { Text("⋮", style = MaterialTheme.typography.titleLarge) }
+                                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                    DropdownMenuItem(text = { Text("Удалить") }, onClick = {
+                                        menuOpen = false
+                                        viewModel.deletePersonal(item.e164)
+                                    })
+                                }
+                            }
                         }
                     }
                 }
-                CheckRow("Пометить как спам", spam) { spam = it }
-                Text(
-                    "Только предупреждает. Для отклонения звонков выберите «Блокировать»",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = !saving,
-                onClick = {
-                    val normalized = viewModel.normalizeNumber(number)
-                    if (normalized == null) {
-                        error = "Введите корректный номер с кодом страны"
-                        return@TextButton
-                    }
-                    val existing = viewModel.personalNumber(normalized)
-                    if (existing != null && existing.e164 != initial?.e164) {
-                        duplicate = existing
-                        return@TextButton
-                    }
-                    saving = true
-                    viewModel.savePersonal(
-                        rawNumber = normalized,
-                        note = note,
-                        action = action,
-                        personalSpam = spam,
-                        onSaved = onDismiss,
-                        onError = { saving = false },
-                    )
-                },
-            ) { Text(if (saving) "Сохраняем…" else "Сохранить") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss, enabled = !saving) { Text("Отмена") } },
-    )
-
-    duplicate?.let { existing ->
-        AlertDialog(
-            onDismissRequest = { duplicate = null },
-            title = { Text("Номер уже добавлен") },
-            text = { Text("Открыть существующее правило для ${existing.e164}?") },
-            confirmButton = {
-                TextButton(onClick = { duplicate = null; onDismiss(); onOpenExisting(existing) }) { Text("Открыть") }
-            },
-            dismissButton = { TextButton(onClick = { duplicate = null }) { Text("Остаться") } },
-        )
+        }
     }
 }
 
@@ -954,7 +814,7 @@ private fun SettingsStatusRow(text: String, enabled: Boolean) {
     }
 }
 
-private fun providerLabel(id: String): String = when (id) { "ipqs" -> "IPQualityScore"; "tellows" -> "tellows"; else -> "PhoneBlock" }
+internal fun providerLabel(id: String): String = when (id) { "ipqs" -> "IPQualityScore"; "tellows" -> "tellows"; else -> "PhoneBlock" }
 private fun providerSaved(id: String, keys: KeyStatus): Boolean = when (id) { "ipqs" -> keys.ipqsSaved; "tellows" -> keys.tellowsSaved; else -> keys.phoneBlockSaved }
 private fun configuredProviderCount(keys: KeyStatus): Int = listOf(keys.ipqsSaved, keys.tellowsSaved, keys.phoneBlockSaved).count { it }
 private fun configuredProviderLabels(keys: KeyStatus): String = listOfNotNull(
@@ -1254,120 +1114,11 @@ private fun ProviderChip(id: String, label: String, selected: String, onSelect: 
 }
 
 @Composable
-fun NumberDetailDialog(
-    identity: CallerIdentity,
-    onDismiss: () -> Unit,
-    viewModel: AppViewModel,
-) {
-    val context = LocalContext.current
-    val personalNumbers by viewModel.personalNumbers.collectAsState()
-    val personal = personalNumbers.firstOrNull { it.e164 == identity.e164 }
-    var showEditor by remember { mutableStateOf(false) }
-    val action = personal?.action ?: identity.personalAction
-    val blocked = action == PersonalAction.BLOCK
-    val personalSpam = personal?.personalSpam == true || identity.personalSpam
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(identity.displayName ?: identity.e164) },
-        text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                if (identity.displayName != null) Text(identity.e164)
-                CategoryLabel(identity.category)
-                if (action == PersonalAction.ALLOW) Text("Разрешён вашим правилом")
-                if (blocked) Text("Заблокирован вашим правилом")
-                if (identity.externalSpam) {
-                    Text(
-                        "Возможный спам${identity.externalSource?.let { " · источник: $it" }.orEmpty()}",
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-                NumberActionButtons(
-                    context = context,
-                    e164 = identity.e164,
-                    name = identity.displayName,
-                    existingContact = identity.nameSource == "contacts",
-                    resolveContactUri = { viewModel.findContactUri(identity.e164) },
-                )
-                HorizontalDivider()
-                OutlinedButton(
-                    onClick = { showEditor = true },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Изменить личное правило") }
-                OutlinedButton(
-                    onClick = {
-                        viewModel.setAction(identity.e164, if (blocked) PersonalAction.DEFAULT else PersonalAction.BLOCK)
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(if (blocked) "Разблокировать" else "Блокировать")
-                }
-                OutlinedButton(
-                    onClick = { viewModel.markSpam(identity.e164, !personalSpam) },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(if (personalSpam) "Снять мою пометку спама" else "Это спам")
-                }
-                Text(
-                    if (blocked) "Будущие звонки будут отклоняться. Пометка спама не влияет на блокировку."
-                    else "Блокировка отклоняет будущие звонки. Пометка спама только предупреждает.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } },
-    )
-    if (showEditor) {
-        PersonalNumberDialog(
-            viewModel = viewModel,
-            initial = personal,
-            onDismiss = { showEditor = false },
-            onOpenExisting = { showEditor = false },
-        )
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun NumberActionButtons(
-    context: Context,
-    e164: String,
-    name: String?,
-    existingContact: Boolean,
-    resolveContactUri: () -> Uri?,
-) {
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        AssistChip(onClick = { context.startSafe(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$e164"))) }, label = { Text("Позвонить") })
-        AssistChip(onClick = {
-            val digits = e164.filter(Char::isDigit)
-            context.startSafe(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/$digits")))
-        }, label = { Text("WhatsApp") })
-        AssistChip(onClick = { context.startSafe(Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:$e164"))) }, label = { Text("SMS") })
-        AssistChip(onClick = {
-            val contactUri = if (existingContact) resolveContactUri() else null
-            val intent = if (contactUri != null) {
-                Intent(Intent.ACTION_VIEW, contactUri)
-            } else if (existingContact) {
-                Intent(Intent.ACTION_VIEW, ContactsContract.Contacts.CONTENT_URI)
-            } else {
-                Intent(Intent.ACTION_INSERT, ContactsContract.Contacts.CONTENT_URI).apply {
-                    putExtra(ContactsContract.Intents.Insert.PHONE, e164)
-                    name?.let { putExtra(ContactsContract.Intents.Insert.NAME, it) }
-                }
-            }
-            context.startSafe(intent)
-        }, label = { Text(if (existingContact) "Открыть контакт" else "Добавить в контакты") })
-    }
-}
-
-@Composable
 private fun CategoryLabel(category: CallerCategory) {
     val color = when (category) {
         CallerCategory.SPAM -> MaterialTheme.colorScheme.error
         CallerCategory.CONTACT -> MaterialTheme.colorScheme.primary
+        CallerCategory.PERSONAL -> MaterialTheme.colorScheme.primary
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     Text(categoryText(category), color = color, style = MaterialTheme.typography.labelMedium)
@@ -1375,6 +1126,7 @@ private fun CategoryLabel(category: CallerCategory) {
 
 private fun categoryText(category: CallerCategory): String = when (category) {
     CallerCategory.CONTACT -> "Контакт"
+    CallerCategory.PERSONAL -> "Сохранённый номер"
     CallerCategory.INTERNET -> "Интернет"
     CallerCategory.SPAM -> "Спам"
     CallerCategory.UNKNOWN -> "Неизвестный"

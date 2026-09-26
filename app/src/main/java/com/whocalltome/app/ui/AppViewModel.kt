@@ -11,6 +11,7 @@ import com.whocalltome.app.data.db.NumberEntryEntity
 import com.whocalltome.app.data.db.UserOverrideEntity
 import com.whocalltome.app.data.model.CallerIdentity
 import com.whocalltome.app.data.model.PersonalAction
+import com.whocalltome.app.data.model.NumberType
 import com.whocalltome.app.data.phone.ImportCallLogResult
 import com.whocalltome.app.data.repository.AppCallerIdentityRepository
 import com.whocalltome.app.data.settings.SecretStore
@@ -31,6 +32,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val container = application.appContainer
@@ -38,6 +42,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     val recentCalls: StateFlow<List<CallRecordEntity>> = combine(
         repository.recentCalls,
+        repository.numberEntries,
         repository.overrides,
         ::applyPersonalCallOverrides,
     ).stateIn(
@@ -56,16 +61,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             .map { number ->
                 val entry = entriesByNumber[number]
                 val override = overridesByNumber[number]
+                val identity = repository.resolveLocal(number)
                 PersonalNumberUi(
                     e164 = number,
-                    note = entry?.note.orEmpty(),
+                    personalName = entry?.personalName.orEmpty(),
+                    displayName = identity.displayName,
+                    numberType = entry?.numberType ?: NumberType.UNSPECIFIED,
                     action = override?.action ?: PersonalAction.DEFAULT,
                     personalSpam = override?.personalSpam == true,
                     updatedAt = maxOf(entry?.updatedAt ?: 0, override?.updatedAt ?: 0),
                 )
             }
             .sortedByDescending(PersonalNumberUi::updatedAt)
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    }.flowOn(Dispatchers.IO).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val recentLookups: StateFlow<List<ManualLookupEntity>> = repository.manualLookups
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -197,7 +205,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshSystemCallLog(showResult: Boolean = false) {
         viewModelScope.launch {
             _callLogState.value = CallLogUiState.Loading
-            runCatching { container.systemCallLogImporter.importRecent() }
+            runCatching { withContext(Dispatchers.IO) { container.systemCallLogImporter.importRecent() } }
                 .onSuccess { result ->
                     _callLogState.value = when (result) {
                         is ImportCallLogResult.Success -> CallLogUiState.Ready(result.count)
@@ -220,9 +228,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun savePersonal(
         rawNumber: String,
-        note: String,
-        action: PersonalAction,
-        personalSpam: Boolean,
+        personalName: String,
+        numberType: NumberType,
         onSaved: (() -> Unit)? = null,
         onError: (() -> Unit)? = null,
     ) {
@@ -234,7 +241,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             runCatching {
-                repository.savePersonalNumber(e164, note, action, personalSpam)
+                repository.savePersonalNumber(e164, personalName, numberType)
             }.onSuccess {
                 _message.value = "Номер сохранён"
                 onSaved?.invoke()
@@ -245,21 +252,39 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setAction(e164: String, action: PersonalAction) {
+    fun setAction(e164: String, action: PersonalAction, onComplete: ((Boolean) -> Unit)? = null) {
         viewModelScope.launch {
-            repository.setAction(e164, action)
-            _message.value = when (action) {
-                PersonalAction.BLOCK -> "Номер будет блокироваться"
-                PersonalAction.ALLOW -> "Номер всегда разрешён"
-                PersonalAction.DEFAULT -> "Личное правило удалено"
+            runCatching { repository.setAction(e164, action) }.onSuccess {
+                _message.value = when (action) {
+                    PersonalAction.BLOCK -> "Блокировка включена"
+                    PersonalAction.ALLOW -> "Номер разрешён"
+                    PersonalAction.DEFAULT -> "Блокировка выключена"
+                }
+                onComplete?.invoke(true)
+            }.onFailure {
+                _message.value = "Не удалось изменить блокировку"
+                onComplete?.invoke(false)
             }
         }
     }
 
-    fun markSpam(e164: String, isSpam: Boolean) {
+    fun markSpam(e164: String, isSpam: Boolean, onComplete: ((Boolean) -> Unit)? = null) {
         viewModelScope.launch {
-            repository.markPersonalSpam(e164, isSpam)
-            _message.value = if (isSpam) "Отмечено как личный спам" else "Спам-метка снята"
+            runCatching { repository.markPersonalSpam(e164, isSpam) }.onSuccess {
+                _message.value = if (isSpam) "Пометка спама включена" else "Пометка спама снята"
+                onComplete?.invoke(true)
+            }.onFailure {
+                _message.value = "Не удалось изменить пометку спама"
+                onComplete?.invoke(false)
+            }
+        }
+    }
+
+    fun loadIdentity(e164: String, onLoaded: (CallerIdentity?) -> Unit) {
+        viewModelScope.launch {
+            onLoaded(withContext(Dispatchers.IO) {
+                runCatching { repository.resolveLocal(e164) }.getOrNull()
+            })
         }
     }
 
@@ -423,7 +448,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
 data class PersonalNumberUi(
     val e164: String,
-    val note: String,
+    val personalName: String,
+    val displayName: String?,
+    val numberType: NumberType,
     val action: PersonalAction,
     val personalSpam: Boolean,
     val updatedAt: Long,

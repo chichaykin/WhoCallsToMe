@@ -18,6 +18,7 @@ import com.whocalltome.app.data.model.LookupResult
 import com.whocalltome.app.data.model.LookupUpdate
 import com.whocalltome.app.data.model.ProviderLookupStatus
 import com.whocalltome.app.data.model.PersonalAction
+import com.whocalltome.app.data.model.NumberType
 import com.whocalltome.app.data.phone.ContactLookup
 import com.whocalltome.app.data.remote.LookupProviderCatalog
 import kotlinx.coroutines.CancellationException
@@ -125,14 +126,17 @@ class AppCallerIdentityRepository(
         val nameEvidence = externalNames.firstOrNull()
         val spamEvidence = externalReputations.firstOrNull { it.isSpam }
         val newest = freshEvidence.maxByOrNull { it.fetchedAt }
-        val name = LookupCachePolicy.selectDisplayName(contactName, externalNames)
+        val personalName = entry?.personalName?.takeIf(String::isNotBlank)
+        val name = LookupCachePolicy.selectDisplayName(contactName, externalNames, personalName)
         val nameSource = when {
             contactName != null -> "contacts"
+            personalName != null -> "personal"
             nameEvidence != null -> nameEvidence.source
             else -> null
         }
         val sources = listOfNotNull(
             if (hasPersonalRecord) "personal" else null,
+            if (nameSource == "contacts") "contacts" else null,
             if (nameSource != "personal" && nameSource != "contacts") nameSource else null,
             *externalReputations.map(ExternalReputation::source).toTypedArray(),
         ).distinct()
@@ -140,6 +144,7 @@ class AppCallerIdentityRepository(
         val category = when {
             personalSpam || externalSpam -> CallerCategory.SPAM
             nameSource == "contacts" -> CallerCategory.CONTACT
+            personalName != null -> CallerCategory.PERSONAL
             nameEvidence != null -> CallerCategory.INTERNET
             else -> CallerCategory.UNKNOWN
         }
@@ -167,6 +172,7 @@ class AppCallerIdentityRepository(
             hasPersonalRecord = hasPersonalRecord,
             externalNames = externalNames,
             externalReputations = externalReputations,
+            numberType = entry?.numberType ?: NumberType.UNSPECIFIED,
         )
     }
 
@@ -346,51 +352,27 @@ class AppCallerIdentityRepository(
 
     suspend fun clearProviderFailure(source: String) = dao.deleteProviderState(source)
 
-    suspend fun savePersonalNumber(
-        e164: String,
-        note: String,
-        action: PersonalAction,
-        personalSpam: Boolean,
-    ) {
+    suspend fun savePersonalNumber(e164: String, personalName: String, numberType: NumberType) {
         val now = System.currentTimeMillis()
         val existing = dao.getNumberEntry(e164)
         dao.upsertNumberEntry(
             NumberEntryEntity(
                 e164 = e164,
-                note = note.trim(),
-                category = if (personalSpam) CallerCategory.SPAM else CallerCategory.CONTACT,
+                personalName = personalName.trim(),
+                numberType = numberType,
+                category = existing?.category ?: CallerCategory.UNKNOWN,
                 createdAt = existing?.createdAt ?: now,
-                updatedAt = now,
-            ),
-        )
-        dao.upsertOverride(
-            UserOverrideEntity(
-                e164 = e164,
-                action = action,
-                personalSpam = personalSpam,
                 updatedAt = now,
             ),
         )
     }
 
     suspend fun setAction(e164: String, action: PersonalAction) {
-        val existing = dao.getOverride(e164)
-        dao.upsertOverride(
-            (existing ?: UserOverrideEntity(e164 = e164)).copy(
-                action = action,
-                updatedAt = System.currentTimeMillis(),
-            ),
-        )
+        dao.updateAction(e164, action)
     }
 
     suspend fun markPersonalSpam(e164: String, isSpam: Boolean) {
-        val existing = dao.getOverride(e164)
-        dao.upsertOverride(
-            (existing ?: UserOverrideEntity(e164 = e164)).copy(
-                personalSpam = isSpam,
-                updatedAt = System.currentTimeMillis(),
-            ),
-        )
+        dao.updatePersonalSpam(e164, isSpam)
     }
 
     suspend fun deletePersonalNumber(e164: String): PersonalNumberSnapshot? {
@@ -413,6 +395,7 @@ class AppCallerIdentityRepository(
                 direction = direction,
                 eventAt = System.currentTimeMillis(),
                 displayName = identity.displayName,
+                nameSource = identity.nameSource,
                 category = identity.category,
                 wasBlocked = blocked,
                 source = if (identity.personalSpam && !identity.externalSpam) "personal" else identity.source,

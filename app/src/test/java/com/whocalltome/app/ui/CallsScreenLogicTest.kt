@@ -2,6 +2,7 @@ package com.whocalltome.app.ui
 
 import com.whocalltome.app.data.db.CallRecordEntity
 import com.whocalltome.app.data.db.UserOverrideEntity
+import com.whocalltome.app.data.db.NumberEntryEntity
 import com.whocalltome.app.data.model.CallerCategory
 import com.whocalltome.app.data.model.PersonalAction
 import com.whocalltome.app.R
@@ -14,6 +15,39 @@ import org.junit.Test
 
 class CallsScreenLogicTest {
     private val zone = ZoneId.of("Asia/Singapore")
+
+    @Test
+    fun savedNameUpdatesHistoryAndSearchWithoutChangingPastOutcome() {
+        val original = call(1, "MISSED", "+1", "Name from provider").copy(source = "ipqs")
+        val shown = applyPersonalCallOverrides(
+            listOf(original),
+            listOf(NumberEntryEntity(e164 = "+1", personalName = "Local business")),
+            emptyList(),
+        ).single()
+        assertEquals("Local business", shown.displayName)
+        assertEquals(listOf(1L), filterCalls(listOf(shown), "local business", CallFilter.ALL).map { it.id })
+        assertEquals("Пропущен", callStatusLabel(shown))
+    }
+
+    @Test
+    fun contactNameStillLeadsSavedNameInHistory() {
+        val original = call(1, "INCOMING", "+1", "Contact name").copy(source = "personal + contacts")
+        val shown = applyPersonalCallOverrides(
+            listOf(original),
+            listOf(NumberEntryEntity(e164 = "+1", personalName = "Other name")),
+            emptyList(),
+        ).single()
+        assertEquals("Contact name", shown.displayName)
+    }
+
+    @Test
+    fun clearingSavedNameClearsLocallyCapturedHistoryName() {
+        val original = call(1, "INCOMING", "+1", "Saved before clearing")
+            .copy(nameSource = "personal", source = "personal")
+        val shown = applyPersonalCallOverrides(listOf(original), emptyList(), emptyList()).single()
+        assertNull(shown.displayName)
+        assertEquals("Входящий", callStatusLabel(shown))
+    }
 
     @Test
     fun filterCombinesMissedAndNormalizedNumberSearch() {
@@ -130,6 +164,20 @@ class CallsScreenLogicTest {
         assertTrue(filterCalls(marked, "", CallFilter.BLOCKED).isEmpty())
         assertEquals(CallerCategory.UNKNOWN, calls.single().category)
         assertEquals(calls, applyPersonalCallOverrides(calls, listOf(UserOverrideEntity(e164 = "+1"))))
+    }
+
+    @Test
+    fun removingPersonalSpamKeepsExternalWarningWithoutPersonalLabel() {
+        val original = call(1, "INCOMING", "+1", null)
+            .copy(category = CallerCategory.SPAM, source = "personal + ipqs")
+        val shown = applyPersonalCallOverrides(
+            listOf(original),
+            listOf(UserOverrideEntity(e164 = "+1", personalSpam = false)),
+        ).single()
+
+        assertEquals(CallerCategory.SPAM, shown.category)
+        assertEquals("Возможный спам", callWarningLabel(shown))
+        assertEquals("Входящий", callStatusLabel(shown))
     }
 
     @Test

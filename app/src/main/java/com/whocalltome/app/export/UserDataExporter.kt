@@ -5,6 +5,7 @@ import com.whocalltome.app.data.db.NumberEntryEntity
 import com.whocalltome.app.data.db.UserOverrideEntity
 import com.whocalltome.app.data.model.CallerCategory
 import com.whocalltome.app.data.model.PersonalAction
+import com.whocalltome.app.data.model.NumberType
 import com.whocalltome.app.data.settings.AppPreferences
 import com.whocalltome.app.data.settings.ThemeMode
 import org.json.JSONArray
@@ -17,13 +18,14 @@ class UserDataExporter(
     suspend fun exportJson(): String {
         val root = JSONObject()
             .put("format", "who-call-to-me")
-            .put("version", 2)
+            .put("version", 3)
             .put("exportedAt", System.currentTimeMillis())
         val entries = JSONArray()
         dao.getAllNumberEntries().forEach { entry ->
             entries.put(JSONObject()
                 .put("e164", entry.e164)
-                .put("note", entry.note)
+                .put("personalName", entry.personalName)
+                .put("numberType", entry.numberType.name)
                 .put("category", entry.category.name)
                 .put("createdAt", entry.createdAt)
                 .put("updatedAt", entry.updatedAt))
@@ -46,7 +48,7 @@ class UserDataExporter(
     suspend fun prepareImport(value: String): PreparedImport {
         val root = JSONObject(value)
         require(root.optString("format") == "who-call-to-me") { "Неизвестный формат файла" }
-        require(root.optInt("version") in setOf(1, 2)) { "Неподдерживаемая версия экспорта" }
+        require(root.optInt("version") in setOf(1, 2, 3)) { "Неподдерживаемая версия экспорта" }
         val entriesJson = root.optJSONArray("numberEntries") ?: JSONArray()
         val entries = buildList {
             for (index in 0 until entriesJson.length()) {
@@ -55,7 +57,10 @@ class UserDataExporter(
                 require(number.startsWith("+")) { "Некорректный номер в резервной копии" }
                 add(NumberEntryEntity(
                     e164 = number,
-                    note = item.optString("note"),
+                    personalName = if (root.optInt("version") == 3) item.optString("personalName") else "",
+                    numberType = if (root.optInt("version") == 3) {
+                        enumValueOfOrDefault(item.optString("numberType"), NumberType.UNSPECIFIED)
+                    } else NumberType.UNSPECIFIED,
                     category = enumValueOfOrDefault(item.optString("category"), CallerCategory.UNKNOWN),
                     createdAt = item.optLong("createdAt", System.currentTimeMillis()),
                     updatedAt = item.optLong("updatedAt", System.currentTimeMillis()),

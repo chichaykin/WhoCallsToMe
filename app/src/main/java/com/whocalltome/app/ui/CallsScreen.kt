@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import com.whocalltome.app.R
 import com.whocalltome.app.data.db.CallRecordEntity
 import com.whocalltome.app.data.db.UserOverrideEntity
+import com.whocalltome.app.data.db.NumberEntryEntity
 import com.whocalltome.app.data.model.CallerCategory
 import com.whocalltome.app.data.model.CallerIdentity
 import com.whocalltome.app.data.model.PersonalAction
@@ -84,10 +85,10 @@ fun CallsScreen(
     listState: LazyListState,
     callLogPermissionGranted: Boolean,
     onRequestCallLogPermission: () -> Unit,
+    onOpenNumber: (String) -> Unit,
 ) {
     val calls by viewModel.recentCalls.collectAsState()
     val importState by viewModel.callLogState.collectAsState()
-    var selectedCall by remember { mutableStateOf<CallRecordEntity?>(null) }
     val filtered = filterCalls(calls, search, filter)
     val groups = groupCallsByDay(filtered, System.currentTimeMillis(), ZoneId.systemDefault())
     val searchDescription = stringResource(R.string.calls_search)
@@ -168,7 +169,7 @@ fun CallsScreen(
                             )
                         }
                         items(group.calls, key = CallRecordEntity::id) { call ->
-                            CallRow(call = call, onClick = { selectedCall = call })
+                            CallRow(call = call, onClick = { onOpenNumber(call.e164) })
                         }
                     }
                 }
@@ -176,23 +177,6 @@ fun CallsScreen(
         }
     }
 
-    selectedCall?.let { selected ->
-        val call = calls.firstOrNull { it.id == selected.id } ?: selected
-        NumberDetailDialog(
-            identity = CallerIdentity(
-                e164 = call.e164,
-                displayName = call.displayName,
-                category = call.category,
-                source = call.source,
-                isSpam = call.category == CallerCategory.SPAM,
-                personalSpam = call.source == "personal" && call.category == CallerCategory.SPAM,
-                externalSpam = call.source != "personal" && call.category == CallerCategory.SPAM,
-                nameSource = if (call.source == "contacts") "contacts" else null,
-            ),
-            onDismiss = { selectedCall = null },
-            viewModel = viewModel,
-        )
-    }
 }
 
 @Composable
@@ -304,10 +288,28 @@ fun callsEmptyMessage(search: String, filter: CallFilter): Int = when {
 /** Apply current personal labels for display without rewriting historical call outcomes. */
 fun applyPersonalCallOverrides(
     calls: List<CallRecordEntity>,
+    entries: List<NumberEntryEntity>,
     overrides: List<UserOverrideEntity>,
 ): List<CallRecordEntity> {
+    val names = entries.associateBy(NumberEntryEntity::e164)
     val byNumber = overrides.associateBy(UserOverrideEntity::e164)
-    return calls.map { call ->
+    return calls.map { original ->
+        val savedName = names[original.e164]?.personalName?.takeIf(String::isNotBlank)
+        val contact = original.nameSource == "contacts" ||
+            (original.nameSource == null && "contacts" in original.source.split(" + "))
+        val call = original.copy(
+            displayName = when {
+                contact -> original.displayName
+                savedName != null -> savedName
+                original.nameSource == "personal" -> null
+                else -> original.displayName
+            },
+            category = when {
+                savedName != null && !contact && original.category != CallerCategory.SPAM -> CallerCategory.PERSONAL
+                savedName == null && original.category == CallerCategory.PERSONAL -> CallerCategory.UNKNOWN
+                else -> original.category
+            },
+        )
         val personal = byNumber[call.e164]
         val hasPersonalRule = personal?.let {
             it.personalSpam || it.action != PersonalAction.DEFAULT
@@ -334,6 +336,9 @@ fun applyPersonalCallOverrides(
         }
     }
 }
+
+fun applyPersonalCallOverrides(calls: List<CallRecordEntity>, overrides: List<UserOverrideEntity>): List<CallRecordEntity> =
+    applyPersonalCallOverrides(calls, emptyList(), overrides)
 
 private fun normalizeNumberSearch(value: String): String =
     value.filter { it.isDigit() || it == '+' }
@@ -374,7 +379,7 @@ fun callStatusLabel(call: CallRecordEntity): String = when {
 
 fun callWarningLabel(call: CallRecordEntity): String? =
     if (call.category != CallerCategory.SPAM) null
-    else if (call.source.split(" + ").contains("personal")) "Личная отметка: спам" else "Возможный спам"
+    else if (call.source == "personal") "Личная отметка: спам" else "Возможный спам"
 
 private fun callMetadata(call: CallRecordEntity, visual: CallVisual): String {
     val duration = call.durationSeconds.takeIf { it > 0 }?.let(::formatCallDuration)
@@ -390,7 +395,8 @@ fun callTimeLabel(call: CallRecordEntity, zone: ZoneId = ZoneId.systemDefault())
 
 private fun sourceLabel(call: CallRecordEntity): String? = when {
     callWarningLabel(call) != null -> null
-    call.source.split(" + ").contains("personal") -> "Личная запись"
+    call.category == CallerCategory.PERSONAL -> "Сохранённый номер"
+    call.source.split(" + ").contains("personal") -> "Сохранено в приложении"
     call.category == CallerCategory.CONTACT || call.source == "contacts" -> "Контакт"
     call.category == CallerCategory.INTERNET -> "Данные из интернета"
     else -> null

@@ -9,6 +9,7 @@ import com.whocalltome.app.data.db.NumberEntryEntity
 import com.whocalltome.app.data.db.UserOverrideEntity
 import com.whocalltome.app.data.model.CallerCategory
 import com.whocalltome.app.data.model.PersonalAction
+import com.whocalltome.app.data.model.NumberType
 import com.whocalltome.app.data.settings.AppPreferences
 import com.whocalltome.app.data.settings.ThemeMode
 import kotlinx.coroutines.runBlocking
@@ -49,7 +50,8 @@ class UserDataExporterInstrumentedTest {
         dao.upsertNumberEntry(
             NumberEntryEntity(
                 e164 = "+6599990001",
-                note = "Test note",
+                personalName = "Test name",
+                numberType = NumberType.BUSINESS,
                 category = CallerCategory.SPAM,
             ),
         )
@@ -62,8 +64,9 @@ class UserDataExporterInstrumentedTest {
         )
 
         val json = exporter.exportJson()
-        assertTrue(json.contains("Test note"))
-        assertFalse(json.contains("personalName"))
+        assertTrue(json.contains("Test name"))
+        assertTrue(json.contains("BUSINESS"))
+        assertFalse(json.contains("Test note"))
         assertFalse(json.contains("displayNameOverride"))
         assertFalse(json.contains("lookupProvider"))
         assertFalse(json.contains("api_key", ignoreCase = true))
@@ -74,7 +77,8 @@ class UserDataExporterInstrumentedTest {
 
         assertEquals(1, result.entries)
         assertEquals(1, result.overrides)
-        assertEquals("Test note", dao.getNumberEntry("+6599990001")?.note)
+        assertEquals("Test name", dao.getNumberEntry("+6599990001")?.personalName)
+        assertEquals(NumberType.BUSINESS, dao.getNumberEntry("+6599990001")?.numberType)
         assertEquals(PersonalAction.BLOCK, dao.getOverride("+6599990001")?.action)
     }
 
@@ -108,9 +112,24 @@ class UserDataExporterInstrumentedTest {
 
         assertEquals(1, result.entries)
         assertEquals(1, result.overrides)
-        assertEquals("Keep this note", database.dao().getNumberEntry("+6599990002")?.note)
+        assertEquals("", database.dao().getNumberEntry("+6599990002")?.personalName)
+        assertEquals(NumberType.UNSPECIFIED, database.dao().getNumberEntry("+6599990002")?.numberType)
         assertEquals(PersonalAction.ALLOW, database.dao().getOverride("+6599990002")?.action)
         assertTrue(database.dao().getOverride("+6599990002")?.personalSpam == true)
         assertEquals(ThemeMode.DARK, preferences.themeMode)
+    }
+
+    @Test
+    fun changingBlockAndSpamIndependentlyKeepsTheOtherSetting() = runBlocking {
+        val dao = database.dao()
+        dao.updateAction("+6599990003", PersonalAction.BLOCK)
+        dao.updatePersonalSpam("+6599990003", true)
+        assertEquals(PersonalAction.BLOCK, dao.getOverride("+6599990003")?.action)
+        assertTrue(dao.getOverride("+6599990003")?.personalSpam == true)
+
+        dao.updateAction("+6599990003", PersonalAction.DEFAULT)
+        assertTrue(dao.getOverride("+6599990003")?.personalSpam == true)
+        dao.updatePersonalSpam("+6599990003", false)
+        assertEquals(PersonalAction.DEFAULT, dao.getOverride("+6599990003")?.action)
     }
 }

@@ -12,8 +12,8 @@ internal object LookupCachePolicy {
     fun sourceRank(source: String): Int = sourceOrder.indexOf(source).takeIf { it >= 0 }
         ?: sourceOrder.size
 
-    fun selectDisplayName(contactName: String?, names: List<ExternalName>): String? =
-        contactName ?: names.firstOrNull()?.value
+    fun selectDisplayName(contactName: String?, names: List<ExternalName>, personalName: String? = null): String? =
+        contactName ?: personalName?.takeIf(String::isNotBlank) ?: names.firstOrNull()?.value
 
     fun providersNeedingLookup(
         providers: List<NumberLookupProvider>,

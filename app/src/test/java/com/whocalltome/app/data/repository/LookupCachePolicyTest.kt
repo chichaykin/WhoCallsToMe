@@ -230,6 +230,8 @@ class LookupCachePolicyTest {
 
         assertEquals("Contact name", LookupCachePolicy.selectDisplayName("Contact name", names))
         assertEquals("IPQS name", LookupCachePolicy.selectDisplayName(null, names))
+        assertEquals("Contact name", LookupCachePolicy.selectDisplayName("Contact name", names, "Saved name"))
+        assertEquals("Saved name", LookupCachePolicy.selectDisplayName(null, names, "Saved name"))
     }
 
     private fun evidence(

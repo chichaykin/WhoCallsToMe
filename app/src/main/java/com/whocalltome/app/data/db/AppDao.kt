@@ -7,6 +7,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Upsert
+import com.whocalltome.app.data.model.PersonalAction
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -56,6 +57,24 @@ interface AppDao {
 
     @Upsert
     suspend fun upsertOverride(value: UserOverrideEntity)
+
+    @Transaction
+    suspend fun updateAction(e164: String, action: PersonalAction) {
+        val existing = getOverride(e164)
+        upsertOverride((existing ?: UserOverrideEntity(e164 = e164)).copy(
+            action = action,
+            updatedAt = System.currentTimeMillis(),
+        ))
+    }
+
+    @Transaction
+    suspend fun updatePersonalSpam(e164: String, isSpam: Boolean) {
+        val existing = getOverride(e164)
+        upsertOverride((existing ?: UserOverrideEntity(e164 = e164)).copy(
+            personalSpam = isSpam,
+            updatedAt = System.currentTimeMillis(),
+        ))
+    }
 
     @Upsert
     suspend fun upsertManualLookup(value: ManualLookupEntity)

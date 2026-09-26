@@ -14,7 +14,7 @@
     <string name="calls_empty">Журнал звонков пока пуст</string>
     <string name="calls_no_missed">Пропущенных звонков нет</string>
     <string name="calls_no_spam">Звонков с пометкой «Спам» нет</string>
-    <string name="calls_no_blocked">Заблокированных звонков нет. Правила для будущих звонков — в разделе «Мои правила».</string>
+    <string name="calls_no_blocked">Заблокированных звонков нет. Блокировку можно включить в разделе «Мои номера».</string>
     <string name="calls_no_results">Ничего не найдено</string>
     <string name="calls_permission">Чтобы обновлять журнал звонков, разрешите доступ к нему.</string>
     <string name="calls_permission_button">Разрешить доступ</string>

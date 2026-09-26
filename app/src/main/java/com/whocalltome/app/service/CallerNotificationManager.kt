@@ -11,7 +11,6 @@ import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import com.whocalltome.app.data.model.CallerCategory
 import com.whocalltome.app.data.model.CallerIdentity
-import com.whocalltome.app.data.model.PersonalAction
 import com.whocalltome.app.ui.MainActivity
 
 class CallerNotificationManager(private val context: Context) {
@@ -47,12 +46,15 @@ class CallerNotificationManager(private val context: Context) {
         val details = buildList {
             add(identity.e164)
             identity.displayName?.takeIf { it != title }?.let(::add)
-            if (identity.personalAction == PersonalAction.ALLOW) add("разрешено вашим правилом")
-            if (identity.personalAction == PersonalAction.BLOCK) add("заблокировано вашим правилом")
-            if (identity.personalSpam) add("личная метка: спам")
-            if (identity.externalSpam) add("внешнее предупреждение о спаме")
-            identity.externalSpamScore?.let { add("риск: $it") }
-            add("источник: ${identity.source}")
+            if (identity.personalSpam) add("Помечено вами как спам")
+            if (identity.externalSpam) {
+                val sources = identity.externalReputations
+                    .filter { it.isSpam }
+                    .map { providerName(it.source) }
+                    .distinct()
+                    .ifEmpty { listOfNotNull(identity.externalSource?.let(::providerName)) }
+                add("Возможный спам${sources.joinToString(", ").takeIf(String::isNotBlank)?.let { ": $it" }.orEmpty()}")
+            }
         }.joinToString(" · ")
 
         val intent = Intent(context, MainActivity::class.java).apply {
@@ -84,4 +86,11 @@ class CallerNotificationManager(private val context: Context) {
     companion object {
         private const val CHANNEL_ID = "caller_id"
     }
+}
+
+private fun providerName(source: String): String = when (source) {
+    "ipqs" -> "IPQualityScore"
+    "phoneblock" -> "PhoneBlock"
+    "tellows" -> "tellows"
+    else -> source
 }

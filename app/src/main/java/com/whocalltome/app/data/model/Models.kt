@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.Flow
 
 enum class CallerCategory {
     CONTACT,
+    PERSONAL,
     INTERNET,
     SPAM,
     UNKNOWN,
@@ -14,6 +15,8 @@ enum class PersonalAction {
     ALLOW,
     BLOCK,
 }
+
+enum class NumberType { UNSPECIFIED, PERSONAL, BUSINESS }
 
 enum class LookupStatus {
     FOUND,
@@ -89,6 +92,7 @@ data class CallerIdentity(
     val hasPersonalRecord: Boolean = false,
     val externalNames: List<ExternalName> = emptyList(),
     val externalReputations: List<ExternalReputation> = emptyList(),
+    val numberType: NumberType = NumberType.UNSPECIFIED,
 ) {
     val shouldBlock: Boolean
         get() = personalAction == PersonalAction.BLOCK

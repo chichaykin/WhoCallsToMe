@@ -7,6 +7,7 @@ import android.util.Log
 import com.whocalltome.app.appContainer
 import com.whocalltome.app.data.model.CallerCategory
 import com.whocalltome.app.data.model.CallerIdentity
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -24,8 +25,13 @@ class WhoCallScreeningService : CallScreeningService() {
             return
         }
 
-        val localIdentity = runBlocking {
-            withTimeoutOrNull(350) { appContainer.repository.resolveLocal(e164) }
+        val localIdentity = try {
+            runBlocking {
+                withTimeoutOrNull(350) { appContainer.repository.resolveLocal(e164) }
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "local caller lookup unavailable: ${error.javaClass.simpleName}")
+            null
         } ?: CallerIdentity(
             e164 = e164,
             displayName = null,
@@ -36,6 +42,11 @@ class WhoCallScreeningService : CallScreeningService() {
         val blocked = incoming && localIdentity.shouldBlock
         if (incoming) {
             respondToCall(callDetails, if (blocked) blockResponse() else allowResponse())
+            postNotification(
+                identity = localIdentity,
+                blocked = blocked,
+                alert = blocked || localIdentity.shouldWarn,
+            )
             Log.i(
                 TAG,
                 "screened incoming=true decision=${if (blocked) "BLOCK" else "ALLOW"} " +
@@ -46,34 +57,39 @@ class WhoCallScreeningService : CallScreeningService() {
         appContainer.applicationScope.launch {
             var identity = localIdentity
             var previousWarning = localIdentity.shouldWarn
-            var firstNotification = true
-            if (!blocked) {
-                appContainer.repository.resolveUpdates(
-                    e164 = e164,
-                    allowNetwork = true,
-                    allowNetworkForContacts = false,
-                ).collect { update ->
-                    identity = update.identity
-                    val becameWarning = !previousWarning && identity.shouldWarn
-                    previousWarning = identity.shouldWarn
-                    // The notification id is stable per number, so each partial answer updates
-                    // the same notification rather than creating another alert.
-                    if (incoming) {
-                        appContainer.notificationManager.show(
-                            identity = identity,
-                            blocked = false,
-                            alert = (firstNotification && identity.shouldWarn) || becameWarning,
-                        )
-                        firstNotification = false
+            var notifiedIdentity = localIdentity
+            try {
+                if (!blocked) {
+                    appContainer.repository.resolveUpdates(
+                        e164 = e164,
+                        allowNetwork = true,
+                        allowNetworkForContacts = false,
+                    ).collect { update ->
+                        identity = update.identity
+                        val becameWarning = !previousWarning && identity.shouldWarn
+                        previousWarning = identity.shouldWarn
+                        // The notification id is stable per number. Only changed caller data
+                        // updates it; a new spam warning can alert the user once.
+                        if (incoming && identity != notifiedIdentity) {
+                            postNotification(
+                                identity = identity,
+                                blocked = false,
+                                alert = becameWarning,
+                            )
+                            notifiedIdentity = identity
+                        }
                     }
                 }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Log.w(TAG, "caller lookup unavailable: ${error.javaClass.simpleName}")
             }
             appContainer.repository.recordCall(
                 identity = identity,
                 direction = if (incoming) "INCOMING" else "OUTGOING",
                 blocked = blocked,
             )
-            if (incoming && blocked) appContainer.notificationManager.show(identity, blocked, alert = true)
             Log.i(
                 TAG,
                 "resolved category=${identity.category} source=${identity.source} " +
@@ -97,6 +113,14 @@ class WhoCallScreeningService : CallScreeningService() {
         .setSkipCallLog(false)
         .setSkipNotification(false)
         .build()
+
+    private fun postNotification(identity: CallerIdentity, blocked: Boolean, alert: Boolean) {
+        try {
+            appContainer.notificationManager.show(identity, blocked, alert)
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "caller notification unavailable: ${error.javaClass.simpleName}")
+        }
+    }
 
     companion object {
         private const val TAG = "WhoCallScreening"

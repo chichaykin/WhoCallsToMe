@@ -73,12 +73,14 @@ class SystemCallLogImporter(
                 category = identity.category,
                 wasBlocked = row.type == CallLog.Calls.BLOCKED_TYPE,
                 source = when {
+                    identity.personalSpam && !identity.externalSpam -> "personal"
                     identity.source != "unknown" -> identity.source
                     row.cachedName != null -> "system-call-log"
                     else -> "system-call-log"
                 },
                 systemCallId = row.id,
                 durationSeconds = row.durationSeconds,
+                nameSource = identity.nameSource ?: if (row.cachedName != null) "system-call-log" else null,
             )
         }
         if (records.isNotEmpty()) dao.insertCallRecords(records)

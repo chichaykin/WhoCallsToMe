@@ -5,11 +5,13 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.whocalltome.app.data.model.CallerCategory
 import com.whocalltome.app.data.model.PersonalAction
+import com.whocalltome.app.data.model.NumberType
 
 @Entity(tableName = "number_entries")
 data class NumberEntryEntity(
     @PrimaryKey val e164: String,
-    val note: String = "",
+    val personalName: String = "",
+    val numberType: NumberType = NumberType.UNSPECIFIED,
     val category: CallerCategory = CallerCategory.UNKNOWN,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
@@ -65,6 +67,7 @@ data class CallRecordEntity(
     val source: String = "local",
     val systemCallId: Long? = null,
     val durationSeconds: Long = 0,
+    val nameSource: String? = null,
 )
 
 @Entity(tableName = "sync_state")
