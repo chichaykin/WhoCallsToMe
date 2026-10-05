@@ -593,8 +593,8 @@ private fun IdentityCard(
                 providerStates.forEach { provider ->
                     val detail = when (provider.status) {
                         null -> "проверяется"
-                        com.whocalltome.app.data.model.LookupStatus.FOUND -> "данные обновлены"
-                        com.whocalltome.app.data.model.LookupStatus.NOT_FOUND -> "данных нет"
+                        com.whocalltome.app.data.model.LookupStatus.FOUND -> if (provider.fromCache) "сохранённые данные" else "данные обновлены"
+                        com.whocalltome.app.data.model.LookupStatus.NOT_FOUND -> if (provider.fromCache) "данных нет (сохранённый ответ)" else "данных нет"
                         com.whocalltome.app.data.model.LookupStatus.NETWORK_ERROR -> "нет сети"
                         com.whocalltome.app.data.model.LookupStatus.QUOTA_EXHAUSTED -> "квота временно недоступна"
                         com.whocalltome.app.data.model.LookupStatus.NOT_CONFIGURED -> "не настроен"

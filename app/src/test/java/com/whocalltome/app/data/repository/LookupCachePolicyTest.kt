@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.atomic.AtomicInteger
@@ -18,6 +19,58 @@ class LookupCachePolicyTest {
     private val now = 1_000_000L
     private val ipqs = FakeProvider("ipqs")
     private val tellows = FakeProvider("tellows")
+
+    @Test
+    fun cachedProviderStatusDistinguishesFreshMissingAndExpiredEvidence() {
+        val fresh = evidence("ipqs", reputationExpiresAt = now + 1)
+        val cached = LookupCachePolicy.cachedStatus("ipqs", listOf(fresh), now)!!
+        assertEquals(LookupStatus.FOUND, cached.status)
+        assertTrue(cached.fromCache)
+        assertNull(LookupCachePolicy.cachedStatus("ipqs", listOf(fresh), now + 1))
+        assertNull(LookupCachePolicy.cachedStatus("phoneblock", listOf(fresh), now))
+
+        val negative = evidence("ipqs", status = LookupStatus.NOT_FOUND, negativeExpiresAt = now + 1)
+        assertEquals(
+            LookupStatus.NOT_FOUND,
+            LookupCachePolicy.cachedStatus("ipqs", listOf(negative), now)!!.status,
+        )
+    }
+
+    @Test
+    fun reputationIsReusedForThirtyDaysAndThenRefreshed() {
+        val day = 24L * 60L * 60L * 1_000L
+        for (spam in listOf(false, true)) {
+            val result = foundOrNotFound(
+                e164 = "+6500000000",
+                source = "ipqs",
+                name = null,
+                spamScore = if (spam) 90 else 0,
+                spam = spam,
+                providerCategory = null,
+            )
+            val cached = LookupCachePolicy.entityFor(result, previous = null)
+            val expiry = result.fetchedAt + 30 * day
+
+            assertEquals(expiry, cached.reputationExpiresAt)
+            assertEquals(expiry, cached.refreshExpiresAt)
+            assertEquals(expiry, cached.expiresAt)
+            for (time in listOf(result.fetchedAt + day, expiry - 1)) {
+                assertTrue(LookupCachePolicy.isReputationFresh(cached, time))
+                assertTrue(
+                    LookupCachePolicy.providersNeedingLookup(listOf(ipqs), listOf(cached), time, false).isEmpty(),
+                )
+            }
+            assertFalse(LookupCachePolicy.isReputationFresh(cached, expiry))
+            assertEquals(
+                listOf(ipqs),
+                LookupCachePolicy.providersNeedingLookup(listOf(ipqs), listOf(cached), expiry, false),
+            )
+            assertEquals(
+                listOf(ipqs),
+                LookupCachePolicy.providersNeedingLookup(listOf(ipqs), listOf(cached), expiry - 1, true),
+            )
+        }
+    }
 
     @Test
     fun onlyExpiredSourceIsRequestedWhenOtherSourceHasFreshCache() {
@@ -54,7 +107,7 @@ class LookupCachePolicyTest {
         val negative = LookupCachePolicy.entityFor(negativeResult, previous = null)
 
         assertEquals(LookupStatus.NOT_FOUND.name, negative.status)
-        assertTrue(negative.negativeExpiresAt!! > negative.fetchedAt)
+        assertEquals(negative.fetchedAt + 24L * 60L * 60L * 1_000L, negative.negativeExpiresAt)
         assertTrue(
             LookupCachePolicy.providersNeedingLookup(
                 listOf(ipqs), listOf(negative), negative.fetchedAt + 1, false,

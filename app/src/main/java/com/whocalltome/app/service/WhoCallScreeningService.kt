@@ -7,6 +7,7 @@ import android.util.Log
 import com.whocalltome.app.appContainer
 import com.whocalltome.app.data.model.CallerCategory
 import com.whocalltome.app.data.model.CallerIdentity
+import com.whocalltome.app.data.model.LookupUpdate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -40,11 +41,19 @@ class WhoCallScreeningService : CallScreeningService() {
         )
 
         val blocked = incoming && localIdentity.shouldBlock
+        val notificationSession = if (incoming) {
+            appContainer.notificationManager.beginSession(e164)
+        } else {
+            0L
+        }
+        val initialLookup = CallerLookupNotificationState.from(LookupUpdate(localIdentity))
         if (incoming) {
             respondToCall(callDetails, if (blocked) blockResponse() else allowResponse())
             postNotification(
                 identity = localIdentity,
                 blocked = blocked,
+                lookup = initialLookup,
+                session = notificationSession,
                 alert = blocked || localIdentity.shouldWarn,
             )
             Log.i(
@@ -55,46 +64,56 @@ class WhoCallScreeningService : CallScreeningService() {
         }
 
         appContainer.applicationScope.launch {
-            var identity = localIdentity
-            var previousWarning = localIdentity.shouldWarn
-            var notifiedIdentity = localIdentity
             try {
-                if (!blocked) {
-                    appContainer.repository.resolveUpdates(
-                        e164 = e164,
-                        allowNetwork = true,
-                        allowNetworkForContacts = false,
-                    ).collect { update ->
-                        identity = update.identity
-                        val becameWarning = !previousWarning && identity.shouldWarn
-                        previousWarning = identity.shouldWarn
-                        // The notification id is stable per number. Only changed caller data
-                        // updates it; a new spam warning can alert the user once.
-                        if (incoming && identity != notifiedIdentity) {
-                            postNotification(
-                                identity = identity,
-                                blocked = false,
-                                alert = becameWarning,
-                            )
-                            notifiedIdentity = identity
-                        }
+                var identity = localIdentity
+                var previousWarning = localIdentity.shouldWarn
+                var notifiedIdentity = localIdentity
+                var notifiedLookup = initialLookup
+                var latestUpdate = LookupUpdate(localIdentity)
+                fun publish(update: LookupUpdate, interrupted: Boolean = false) {
+                    latestUpdate = update
+                    identity = update.identity
+                    val becameWarning = !previousWarning && identity.shouldWarn
+                    previousWarning = identity.shouldWarn
+                    val lookup = CallerLookupNotificationState.from(update, interrupted)
+                    // Progress changes must be shown even when the caller's name and score do not change.
+                    if (incoming && (identity != notifiedIdentity || lookup != notifiedLookup)) {
+                        postNotification(identity, false, lookup, notificationSession, becameWarning)
+                        notifiedIdentity = identity
+                        notifiedLookup = lookup
                     }
                 }
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                Log.w(TAG, "caller lookup unavailable: ${error.javaClass.simpleName}")
+                try {
+                    if (!blocked) {
+                        collectCallerLookupProgress(
+                            initial = latestUpdate,
+                            updates = appContainer.repository.resolveUpdates(
+                                e164 = e164,
+                                allowNetwork = true,
+                                allowNetworkForContacts = false,
+                            ),
+                        ) { update, interrupted -> publish(update, interrupted) }
+                    }
+                } catch (error: CancellationException) {
+                    if (!blocked) publish(latestUpdate, interrupted = true)
+                    throw error
+                } catch (error: Exception) {
+                    if (!blocked) publish(latestUpdate, interrupted = true)
+                    Log.w(TAG, "caller lookup unavailable: ${error.javaClass.simpleName}")
+                }
+                appContainer.repository.recordCall(
+                    identity = identity,
+                    direction = if (incoming) "INCOMING" else "OUTGOING",
+                    blocked = blocked,
+                )
+                Log.i(
+                    TAG,
+                    "resolved category=${identity.category} source=${identity.source} " +
+                        "blocked=$blocked totalMs=${SystemClock.elapsedRealtime() - startedAt}",
+                )
+            } finally {
+                if (incoming) appContainer.notificationManager.finishSession(e164, notificationSession)
             }
-            appContainer.repository.recordCall(
-                identity = identity,
-                direction = if (incoming) "INCOMING" else "OUTGOING",
-                blocked = blocked,
-            )
-            Log.i(
-                TAG,
-                "resolved category=${identity.category} source=${identity.source} " +
-                    "blocked=$blocked totalMs=${SystemClock.elapsedRealtime() - startedAt}",
-            )
         }
     }
 
@@ -114,9 +133,15 @@ class WhoCallScreeningService : CallScreeningService() {
         .setSkipNotification(false)
         .build()
 
-    private fun postNotification(identity: CallerIdentity, blocked: Boolean, alert: Boolean) {
+    private fun postNotification(
+        identity: CallerIdentity,
+        blocked: Boolean,
+        lookup: CallerLookupNotificationState,
+        session: Long,
+        alert: Boolean,
+    ) {
         try {
-            appContainer.notificationManager.show(identity, blocked, alert)
+            appContainer.notificationManager.show(identity, blocked, lookup, session, alert)
         } catch (error: RuntimeException) {
             Log.w(TAG, "caller notification unavailable: ${error.javaClass.simpleName}")
         }

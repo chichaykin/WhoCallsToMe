@@ -44,7 +44,7 @@ data class LookupResult(
 ) {
     companion object {
         const val NAME_CACHE_MILLIS = 30L * 24L * 60L * 60L * 1_000L
-        const val REPUTATION_CACHE_MILLIS = 24L * 60L * 60L * 1_000L
+        const val REPUTATION_CACHE_MILLIS = 30L * 24L * 60L * 60L * 1_000L
         const val DEFAULT_NEGATIVE_CACHE_MILLIS = 24L * 60L * 60L * 1_000L
     }
 }
@@ -65,6 +65,7 @@ data class ProviderLookupStatus(
     val status: LookupStatus? = null,
     val message: String? = null,
     val nextAttemptAt: Long? = null,
+    val fromCache: Boolean = false,
 )
 
 data class FeedSyncResult(

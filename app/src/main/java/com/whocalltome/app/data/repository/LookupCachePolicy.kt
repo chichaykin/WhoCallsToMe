@@ -5,6 +5,7 @@ import com.whocalltome.app.data.model.LookupResult
 import com.whocalltome.app.data.model.LookupStatus
 import com.whocalltome.app.data.model.NumberLookupProvider
 import com.whocalltome.app.data.model.ExternalName
+import com.whocalltome.app.data.model.ProviderLookupStatus
 
 internal object LookupCachePolicy {
     private val sourceOrder = listOf("ipqs", "tellows", "phoneblock")
@@ -32,6 +33,12 @@ internal object LookupCachePolicy {
 
     fun isNegativeFresh(evidence: LookupEvidenceEntity, now: Long): Boolean =
         evidence.status == LookupStatus.NOT_FOUND.name && negativeExpiry(evidence) > now
+
+    fun cachedStatus(source: String, evidence: List<LookupEvidenceEntity>, now: Long): ProviderLookupStatus? {
+        val current = evidence.firstOrNull { it.source == source } ?: return null
+        if (!isCurrent(current, now)) return null
+        return ProviderLookupStatus(source, LookupStatus.valueOf(current.status), fromCache = true)
+    }
 
     fun entityFor(
         result: LookupResult,

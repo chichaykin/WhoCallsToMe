@@ -225,18 +225,23 @@ class AppCallerIdentityRepository(
         } else {
             providers.automaticProviders()
         }
+        val evidence = dao.getEvidence(e164)
+        val now = System.currentTimeMillis()
         val needed = LookupCachePolicy.providersNeedingLookup(
             providers = available,
-            evidence = dao.getEvidence(e164),
-            now = System.currentTimeMillis(),
+            evidence = evidence,
+            now = now,
             force = force,
         )
+        val updates = available.map { provider ->
+            if (provider in needed) ProviderLookupStatus(provider.id)
+            else LookupCachePolicy.cachedStatus(provider.id, evidence, now) ?: ProviderLookupStatus(provider.id)
+        }.toMutableList()
         if (needed.isEmpty()) {
-            emit(LookupUpdate(resolveLocal(e164), isComplete = true))
+            emit(LookupUpdate(resolveLocal(e164), updates, isComplete = true))
             return@flow
         }
 
-        val updates = needed.map { ProviderLookupStatus(source = it.id) }.toMutableList()
         emit(LookupUpdate(resolveLocal(e164), updates.toList()))
         val channel = Channel<ProviderLookupStatus>(needed.size)
         coroutineScope {
@@ -282,13 +287,8 @@ class AppCallerIdentityRepository(
         // A peer can complete after resolveUpdates selected this provider but before this
         // deferred begins. Re-checking here avoids a second paid request in that window.
         if (!force) {
-            val stillNeeded = LookupCachePolicy.providersNeedingLookup(
-                providers = listOf(provider),
-                evidence = dao.getEvidence(e164),
-                now = System.currentTimeMillis(),
-                force = false,
-            ).isNotEmpty()
-            if (!stillNeeded) return ProviderLookupStatus(provider.id)
+            LookupCachePolicy.cachedStatus(provider.id, dao.getEvidence(e164), System.currentTimeMillis())
+                ?.let { return it }
         }
         val now = System.currentTimeMillis()
         val state = dao.getProviderState(provider.id)

@@ -32,9 +32,4 @@ class CallerIdentityPolicyTest {
         assertTrue(personallyBlocked.shouldBlock)
     }
 
-    @Test
-    fun nameCacheIsLongerThanReputationCache() {
-        assertTrue(LookupResult.NAME_CACHE_MILLIS > LookupResult.REPUTATION_CACHE_MILLIS)
-        assertTrue(LookupResult.REPUTATION_CACHE_MILLIS == LookupResult.DEFAULT_NEGATIVE_CACHE_MILLIS)
-    }
 }

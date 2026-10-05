@@ -8,13 +8,18 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import androidx.core.content.ContextCompat
-import com.whocalltome.app.data.model.CallerCategory
 import com.whocalltome.app.data.model.CallerIdentity
 import com.whocalltome.app.ui.MainActivity
 
 class CallerNotificationManager(private val context: Context) {
     private val manager = context.getSystemService(NotificationManager::class.java)
+    private val sessions = CallerNotificationSessions()
+
+    internal fun beginSession(number: String): Long = sessions.begin(number)
+
+    internal fun finishSession(number: String, session: Long) = sessions.finish(number, session)
 
     fun createChannel() {
         manager.createNotificationChannel(
@@ -29,8 +34,15 @@ class CallerNotificationManager(private val context: Context) {
         )
     }
 
-    fun show(identity: CallerIdentity, blocked: Boolean, alert: Boolean = false) {
+    internal fun show(
+        identity: CallerIdentity,
+        blocked: Boolean,
+        lookup: CallerLookupNotificationState,
+        session: Long,
+        alert: Boolean = false,
+    ) {
         if (
+            Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) {
@@ -39,9 +51,9 @@ class CallerNotificationManager(private val context: Context) {
 
         val title = when {
             blocked -> "Звонок заблокирован"
-            identity.category == CallerCategory.SPAM -> "Возможный спам"
+            identity.shouldWarn -> "Возможный спам"
             identity.displayName != null -> identity.displayName
-            else -> "Неизвестный номер"
+            else -> identity.e164
         }
         val details = buildList {
             add(identity.e164)
@@ -56,6 +68,7 @@ class CallerNotificationManager(private val context: Context) {
                 add("Возможный спам${sources.joinToString(", ").takeIf(String::isNotBlank)?.let { ": $it" }.orEmpty()}")
             }
         }.joinToString(" · ")
+        val expandedDetails = (listOf(lookup.summary, details) + lookup.details).joinToString("\n")
 
         val intent = Intent(context, MainActivity::class.java).apply {
             putExtra(MainActivity.EXTRA_PHONE_NUMBER, identity.e164)
@@ -70,27 +83,22 @@ class CallerNotificationManager(private val context: Context) {
         val notification = Notification.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.sym_action_call)
             .setContentTitle(title)
-            .setContentText(details)
-            .setStyle(Notification.BigTextStyle().bigText(details))
+            .setContentText(lookup.summary)
+            .setStyle(Notification.BigTextStyle().bigText(expandedDetails))
+            .setProgress(0, 0, lookup.checking)
             .setCategory(Notification.CATEGORY_CALL)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
-            .setPriority(Notification.PRIORITY_HIGH)
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setOnlyAlertOnce(!alert)
             .setTimeoutAfter(60_000)
             .build()
-        manager.notify(identity.e164.hashCode(), notification)
+        sessions.publish(identity.e164, session) {
+            manager.notify(identity.e164.hashCode(), notification)
+        }
     }
 
     companion object {
         private const val CHANNEL_ID = "caller_id"
     }
-}
-
-private fun providerName(source: String): String = when (source) {
-    "ipqs" -> "IPQualityScore"
-    "phoneblock" -> "PhoneBlock"
-    "tellows" -> "tellows"
-    else -> source
 }
