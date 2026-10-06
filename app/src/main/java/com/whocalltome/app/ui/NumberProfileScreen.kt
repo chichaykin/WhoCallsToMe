@@ -9,6 +9,8 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -42,6 +44,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
@@ -52,14 +55,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
@@ -71,6 +75,7 @@ import com.whocalltome.app.data.model.PersonalAction
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -87,7 +92,9 @@ fun NumberProfileScreen(
 ) {
     val largeText = LocalDensity.current.fontScale >= 1.3f
     val scrollState = key(number) { rememberLazyListState() }
-    var historyExpanded by rememberSaveable(number) { mutableStateOf(false) }
+    var historyRoute by rememberSaveable(number) { mutableStateOf(false) }
+    var detailsOpen by rememberSaveable(number) { mutableStateOf(false) }
+    val historyScrollState = key(number) { rememberLazyListState() }
     val profileNumber = remember(number) { viewModel.normalizeNumber(number) ?: number }
     val records by viewModel.personalNumbers.collectAsState()
     val profileState by viewModel.numberProfileState.collectAsState()
@@ -108,6 +115,7 @@ fun NumberProfileScreen(
     var togglingBlock by remember(number) { mutableStateOf(false) }
     var togglingSpam by remember(number) { mutableStateOf(false) }
     var showDiscard by remember(number) { mutableStateOf(false) }
+    var discardLeavesProfile by remember(number) { mutableStateOf(false) }
     var error by remember(number) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(number, contactsPermissionStatus) {
@@ -136,7 +144,8 @@ fun NumberProfileScreen(
     val actualName = identity?.displayName
     val isContact = profile.isContact
     val leaveProfile = { viewModel.closeNumberProfile(); onBack() }
-    val blocked = (record?.action ?: identity?.personalAction) == PersonalAction.BLOCK
+    val action = record?.action ?: identity?.personalAction ?: PersonalAction.DEFAULT
+    val blocked = action == PersonalAction.BLOCK
     val spam = record?.personalSpam ?: identity?.personalSpam ?: false
     val dirty = if (number.isBlank()) {
         numberInput.isNotBlank() || draftName.isNotBlank() || draftType != NumberType.UNSPECIFIED
@@ -149,7 +158,7 @@ fun NumberProfileScreen(
             normalized == null -> error = "Введите корректный номер с кодом страны"
             number.isBlank() && viewModel.personalNumber(normalized) != null -> onOpenExisting(normalized)
             else -> {
-                val leaveAfterSave = showDiscard
+                val leaveAfterSave = showDiscard && discardLeavesProfile
                 saving = true
                 error = null
                 viewModel.savePersonal(
@@ -169,14 +178,19 @@ fun NumberProfileScreen(
         }
     }
     val back: () -> Unit = {
-        if (editing && dirty) showDiscard = true else leaveProfile()
+        when {
+            historyRoute -> historyRoute = false
+            editing && dirty -> { discardLeavesProfile = true; showDiscard = true }
+            editing && number.isNotBlank() -> editing = false
+            else -> leaveProfile()
+        }
     }
     BackHandler(onBack = back)
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (number.isBlank()) "Новый номер" else if (largeText) "Номер" else "Карточка номера", maxLines = 1) },
+                title = { Text(if (historyRoute) "История звонков" else if (number.isBlank()) "Новый номер" else if (largeText) "Номер" else "Карточка номера", maxLines = 1) },
                 windowInsets = WindowInsets(0, 0, 0, 0),
                 navigationIcon = {
                     IconButton(onClick = back) {
@@ -186,7 +200,9 @@ fun NumberProfileScreen(
             )
         },
     ) { padding ->
-        LazyColumn(
+        if (historyRoute) {
+            FullNumberHistory(history, profileNumber, historyScrollState, viewModel::retryNumberCallHistory, Modifier.padding(padding))
+        } else LazyColumn(
             modifier = Modifier.fillMaxSize().padding(padding),
             state = scrollState,
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
@@ -206,65 +222,14 @@ fun NumberProfileScreen(
                             modifier = Modifier.fillMaxWidth(),
                         )
                     } else {
-                        BoxWithConstraints(Modifier.fillMaxWidth()) {
-                            val compactHeader = maxWidth < 360.dp || largeText
-                            val typeLabel = when (record?.numberType ?: identity?.numberType) {
-                                NumberType.PERSONAL -> "Личный"
-                                NumberType.BUSINESS -> "Бизнес"
-                                else -> null
-                            }
-                            val blockLabel = if (blocked) {
-                                if (roleHeld) "Заблокирован" else "Блокировка настроена"
-                            } else null
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                                ) {
-                                    Box(
-                                        Modifier.size(64.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Icon(
-                                            painter = painterResource(
-                                                if ((record?.numberType ?: identity?.numberType) == NumberType.BUSINESS) R.drawable.ic_business
-                                                else R.drawable.ic_person,
-                                            ),
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                            modifier = Modifier.size(32.dp),
-                                        )
-                                    }
-                                    Column(Modifier.weight(1f)) {
-                                        Text(
-                                            actualName ?: when {
-                                                profile.isLoadingLocal -> "Загружаем данные…"
-                                                profile.localError != null -> "Данные недоступны"
-                                                isContact -> "Контакт без имени"
-                                                identity?.contact == ContactLookupResult.PermissionRequired -> "Нет доступа к контактам"
-                                                identity?.contact == ContactLookupResult.ReadError -> "Контакты недоступны"
-                                                else -> "Неизвестный номер"
-                                            },
-                                            style = MaterialTheme.typography.headlineSmall,
-                                            fontWeight = FontWeight.SemiBold,
-                                            maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                        if (!compactHeader) {
-                                            Text(number, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                                            if (blockLabel != null) Text(blockLabel, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
-                                            if (typeLabel != null) Text(typeLabel, style = MaterialTheme.typography.labelLarge)
-                                        }
-                                    }
-                                }
-                                if (compactHeader) {
-                                    Text(number, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                                    if (blockLabel != null) Text(blockLabel, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
-                                    if (typeLabel != null) Text(typeLabel, style = MaterialTheme.typography.labelLarge)
-                                }
-                            }
-                        }
+                        ProfileHeader(
+                            profileNumber, profile, record?.numberType ?: identity?.numberType ?: NumberType.UNSPECIFIED,
+                            action, spam, roleHeld, onRequestRole,
+                            editLabel = if (!isContact && identity != null) if (savedName.isBlank()) "Задать имя" else "Изменить имя и тип" else null,
+                            onEditName = { draftName = savedName; draftType = savedType; editing = true },
+                            onRequestContactsAccess = if (contactsPermissionStatus == PermissionUiStatus.SETTINGS_REQUIRED) onOpenAppSettings else onRequestContactsPermission,
+                            onRetryContacts = viewModel::refreshNumberProfile,
+                        )
                     }
 
                     if (number.isNotBlank() && profile.isLoadingLocal) {
@@ -274,17 +239,17 @@ fun NumberProfileScreen(
                         Text(profile.localError, color = MaterialTheme.colorScheme.error)
                         if (!profile.isInvalidNumber) TextButton(onClick = viewModel::refreshNumberProfile) { Text("Повторить загрузку") }
                     }
-                    if (number.isNotBlank() && identity?.contact == ContactLookupResult.PermissionRequired) {
+                    if (number.isNotBlank() && actualName == null && identity?.contact == ContactLookupResult.PermissionRequired) {
                         Card {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("Нужен доступ к телефонным контактам, чтобы показать имя")
+                                Text("Разрешите доступ, чтобы находить имена в телефонных контактах")
                                 TextButton(onClick = if (contactsPermissionStatus == PermissionUiStatus.SETTINGS_REQUIRED) onOpenAppSettings else onRequestContactsPermission) {
                                     Text(if (contactsPermissionStatus == PermissionUiStatus.SETTINGS_REQUIRED) "Открыть настройки" else "Разрешить доступ")
                                 }
                             }
                         }
                     }
-                    if (number.isNotBlank() && identity?.contact == ContactLookupResult.ReadError) {
+                    if (number.isNotBlank() && actualName == null && identity?.contact == ContactLookupResult.ReadError) {
                         Text("Не удалось прочитать телефонные контакты", color = MaterialTheme.colorScheme.error)
                         TextButton(onClick = viewModel::refreshNumberProfile) { Text("Повторить") }
                     }
@@ -295,7 +260,7 @@ fun NumberProfileScreen(
                         }
                     }
 
-                    if (!isContact && (number.isBlank() || (editing && identity != null))) {
+                    if (!isContact && number.isBlank()) {
                         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
                             Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Text("Имя в приложении", style = MaterialTheme.typography.titleMedium)
@@ -321,18 +286,6 @@ fun NumberProfileScreen(
                                 }
                             }
                         }
-                    } else if (!isContact && number.isNotBlank() && identity != null) {
-                        Column {
-                            TextButton(onClick = { draftName = savedName; draftType = savedType; editing = true }) {
-                                Text(if (savedName.isBlank()) "Сохранить имя в приложении" else "Изменить имя и тип")
-                            }
-                            if (savedName.isNotBlank()) {
-                                Text("Имя сохранено в приложении", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-                    if (isContact && number.isNotBlank()) {
-                        Text("Из контактов", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     if (error != null && number.isNotBlank()) Text(error!!, color = MaterialTheme.colorScheme.error)
                 }
@@ -342,14 +295,8 @@ fun NumberProfileScreen(
                 item(key = "profile-actions") {
                     ProfileActions(profileNumber, actualName, isContact, (identity?.contact as? ContactLookupResult.Found)?.lookupUri)
                 }
-                numberCallHistorySection(
-                    history = history,
-                    expanded = historyExpanded,
-                    onToggle = { historyExpanded = !historyExpanded },
-                    onRetry = viewModel::retryNumberCallHistory,
-                )
                 item(key = "profile-lookup") {
-                    ProfileLookupCard(profile, onCheck = { viewModel.checkNumberProfile() }, onRefresh = { viewModel.checkNumberProfile(force = true) })
+                    ProfileLookupCard(profile, onCheck = { viewModel.checkNumberProfile() }, onRefresh = { viewModel.checkNumberProfile(force = true) }, onDetails = { detailsOpen = true })
                 }
                 item(key = "profile-settings") {
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -360,8 +307,8 @@ fun NumberProfileScreen(
                                 ProfileSwitch(
                                     title = "Блокировать звонки",
                                     detail = if (blocked) {
-                                        if (roleHeld) "Входящие звонки отклоняются" else "Блокировка включена в приложении"
-                                    } else "Входящие звонки разрешены",
+                                        if (roleHeld) "Входящие звонки отклоняются" else "Нужна роль определения звонков"
+                                    } else if (action == PersonalAction.ALLOW) "Номер разрешён вами" else "Входящие звонки разрешены",
                                     checked = blocked,
                                     enabled = !togglingBlock && identity != null && !profile.isLoadingLocal,
                                 ) { checked ->
@@ -383,26 +330,32 @@ fun NumberProfileScreen(
                         }
                     }
                 }
-                if (identity?.externalSpam == true) {
-                    item(key = "profile-spam") {
-                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
-                            Column(Modifier.padding(16.dp)) {
-                                Text(
-                                    "Возможный спам",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.onErrorContainer,
-                                )
-                                Text(
-                                    "По данным: ${identity?.externalReputations?.filter { it.isSpam }?.joinToString { providerLabel(it.source) }?.ifBlank { identity?.externalSource?.let(::providerLabel) ?: "внешнего источника" }}",
-                                    color = MaterialTheme.colorScheme.onErrorContainer,
-                                )
-                            }
-                        }
-                    }
-                }
+                numberCallHistorySection(history, onOpen = { historyRoute = true }, onRetry = viewModel::retryNumberCallHistory)
             }
             item(key = "profile-bottom") { Spacer(Modifier.height(16.dp)) }
         }
+    }
+    if (editing && !showDiscard && number.isNotBlank() && !isContact) {
+        AlertDialog(
+            onDismissRequest = { if (dirty) { discardLeavesProfile = false; showDiscard = true } else editing = false },
+            title = { Text("Имя в приложении") },
+            text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Будет видно только в этом приложении")
+                OutlinedTextField(draftName, { draftName = it }, label = { Text("Имя или название компании") }, singleLine = true)
+                Text("Тип номера")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(NumberType.PERSONAL to "Личный", NumberType.BUSINESS to "Бизнес").forEach { (type, label) ->
+                        FilterChip(selected = draftType == type, onClick = { draftType = if (draftType == type) NumberType.UNSPECIFIED else type }, label = { Text(label) })
+                    }
+                }
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            } },
+            confirmButton = { TextButton(onClick = save, enabled = !saving && dirty) { Text("Сохранить") } },
+            dismissButton = { TextButton(onClick = { if (dirty) { discardLeavesProfile = false; showDiscard = true } else editing = false }) { Text("Отмена") } },
+        )
+    }
+    if (detailsOpen) {
+        ProfileLookupDetails(profile, onDismiss = { detailsOpen = false })
     }
     if (showDiscard) {
         AlertDialog(
@@ -410,7 +363,7 @@ fun NumberProfileScreen(
             title = { Text("Сохранить изменения?") },
             text = { Text("Имя или тип номера ещё не сохранены") },
             confirmButton = { TextButton(onClick = save, enabled = !saving) { Text("Сохранить") } },
-            dismissButton = { TextButton(onClick = { showDiscard = false; leaveProfile() }, enabled = !saving) { Text("Не сохранять") } },
+            dismissButton = { TextButton(onClick = { showDiscard = false; editing = false; if (discardLeavesProfile) leaveProfile() }, enabled = !saving) { Text("Не сохранять") } },
         )
     }
 }
@@ -446,27 +399,27 @@ private fun ProfileActions(number: String, name: String?, isContact: Boolean, co
         if (compact) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row {
-                    ProfileAction(null, "Позвонить", Modifier.weight(1f), R.drawable.ic_phone, call)
-                    ProfileAction("WA", "WhatsApp", Modifier.weight(1f), onClick = whatsapp)
+                    ProfileAction("Позвонить", Modifier.weight(1f), R.drawable.ic_phone, call)
+                    ProfileAction("WhatsApp", Modifier.weight(1f), R.drawable.ic_whatsapp, whatsapp)
                 }
                 Row {
-                    ProfileAction(null, "SMS", Modifier.weight(1f), R.drawable.ic_message, sms)
-                    ProfileAction("＋", if (isContact) "Открыть контакт" else "В контакты телефона", Modifier.weight(1f), onClick = contact)
+                    ProfileAction("SMS", Modifier.weight(1f), R.drawable.ic_message, sms)
+                    ProfileAction(if (isContact) "Открыть контакт" else "Добавить в контакты", Modifier.weight(1f), if (isContact) R.drawable.ic_person else R.drawable.ic_person_add, contact)
                 }
             }
         } else {
             Row(horizontalArrangement = Arrangement.SpaceEvenly) {
-                ProfileAction(null, "Позвонить", Modifier.weight(1f), R.drawable.ic_phone, call)
-                ProfileAction("WA", "WhatsApp", Modifier.weight(1f), onClick = whatsapp)
-                ProfileAction(null, "SMS", Modifier.weight(1f), R.drawable.ic_message, sms)
-                ProfileAction("＋", if (isContact) "Открыть контакт" else "В контакты телефона", Modifier.weight(1f), onClick = contact)
+                ProfileAction("Позвонить", Modifier.weight(1f), R.drawable.ic_phone, call)
+                ProfileAction("WhatsApp", Modifier.weight(1f), R.drawable.ic_whatsapp, whatsapp)
+                ProfileAction("SMS", Modifier.weight(1f), R.drawable.ic_message, sms)
+                ProfileAction(if (isContact) "Открыть контакт" else "Добавить в контакты", Modifier.weight(1f), if (isContact) R.drawable.ic_person else R.drawable.ic_person_add, contact)
             }
         }
     }
 }
 
 @Composable
-private fun ProfileAction(symbol: String?, label: String, modifier: Modifier = Modifier, iconRes: Int? = null, onClick: () -> Unit) {
+private fun ProfileAction(label: String, modifier: Modifier = Modifier, iconRes: Int, onClick: () -> Unit) {
     Column(
         modifier.clickable(onClick = onClick).padding(vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -476,8 +429,7 @@ private fun ProfileAction(symbol: String?, label: String, modifier: Modifier = M
             Modifier.size(48.dp).background(MaterialTheme.colorScheme.secondaryContainer, CircleShape),
             contentAlignment = Alignment.Center,
         ) {
-            if (iconRes != null) Icon(painterResource(iconRes), contentDescription = null, tint = MaterialTheme.colorScheme.onSecondaryContainer)
-            else Text(symbol.orEmpty(), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSecondaryContainer)
+            Icon(painterResource(iconRes), contentDescription = null, tint = MaterialTheme.colorScheme.onSecondaryContainer)
         }
         Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 2, textAlign = TextAlign.Center)
     }
@@ -499,48 +451,64 @@ private fun ProfileSwitch(title: String, detail: String, checked: Boolean, enabl
 }
 
 @Composable
-private fun ProfileLookupCard(profile: NumberProfileUiState, onCheck: () -> Unit, onRefresh: () -> Unit) {
+private fun ProfileLookupCard(profile: NumberProfileUiState, onCheck: () -> Unit, onRefresh: () -> Unit, onDetails: () -> Unit) {
+    val now by produceState(initialValue = System.currentTimeMillis(), profile.providers) {
+        while (true) { value = System.currentTimeMillis(); delay(15_000) }
+    }
+    val summary = presentProfileLookup(profile, now)
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Проверка по базам", style = MaterialTheme.typography.titleMedium)
-            when {
-                profile.isLoadingLocal -> Text("Сначала загружаем данные на устройстве")
-                profile.isChecking -> {
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                    Text("Проверяем номер…")
-                }
-                !profile.hasChecked -> Text("Нажмите «Проверить по базам», чтобы получить актуальный результат")
-            }
-            if (profile.hasPartialFailure) {
-                Text("Получены данные не от всех источников", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            profile.identity?.externalNames?.forEach { name ->
-                Text("${providerLabel(name.source)} · ${name.value}")
-            }
-            profile.identity?.externalReputations?.forEach { reputation ->
-                Text("${providerLabel(reputation.source)} · ${if (reputation.isSpam) "Возможный спам" else "Репутация найдена"}")
-                reputation.score?.let { Text("Оценка источника: $it") }
-            }
-            profile.providers.forEach { provider ->
-                Text("${providerLabel(provider.source)} · ${profileProviderStatusText(provider, profile.isChecking)}")
-                provider.checkedAt?.let { Text("Проверено: ${formatProfileTime(it)}", style = MaterialTheme.typography.bodySmall) }
-                provider.nextAttemptAt?.takeIf { it != Long.MAX_VALUE }?.let {
-                    Text("Повторная попытка доступна: ${formatProfileTime(it)}", style = MaterialTheme.typography.bodySmall)
-                }
-            }
-            if (profile.providers.isEmpty() && profile.identity?.checkedAt != null) {
-                Text("Сохранённые данные · ${formatProfileTime(profile.identity.checkedAt)}", style = MaterialTheme.typography.bodySmall)
+            Text("Проверка номера", style = MaterialTheme.typography.titleMedium)
+            Text(summary.title, color = if (summary.warning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
+            summary.subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            if (profile.isChecking) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (summary.warning && profile.hasPartialFailure) Text("Проверка неполная · ответили ${summary.answered} из ${summary.total} источников")
+            if (summary.action == "Обновить доступные") Text("Источники на паузе будут пропущены", style = MaterialTheme.typography.bodySmall)
+            summary.retryAt?.let { Text("Повторить после ${formatProfileDateTime(it, now)}", style = MaterialTheme.typography.bodySmall) }
+            if (profile.providers.any { it.status == LookupStatus.NOT_CONFIGURED || it.nextAttemptAt == Long.MAX_VALUE }) {
+                Text("Проверьте настройки источников", style = MaterialTheme.typography.bodySmall)
             }
             profile.lookupError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Text(
-                "При проверке номер передаётся выбранному источнику и PhoneBlock. Внешняя оценка спама служит предупреждением.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            TextButton(
-                onClick = if (profile.hasChecked) onRefresh else onCheck,
-                enabled = profile.identity != null && !profile.isLoadingLocal && !profile.isChecking,
-            ) { Text(if (profile.hasChecked) "Обновить" else "Проверить по базам") }
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val compact = maxWidth < 340.dp || LocalDensity.current.fontScale >= 1.3f
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                summary.action?.let { action ->
+                    TextButton(onClick = if (profile.hasChecked) onRefresh else onCheck, enabled = summary.canRefresh && !profile.isChecking) { Text(action) }
+                }
+                TextButton(onClick = onDetails) { Text(if (compact) "Подробнее" else "Источники и детали") }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ProfileLookupDetails(profile: NumberProfileUiState, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Источники и детали", style = MaterialTheme.typography.titleLarge)
+            val sources = (profile.providers.map { it.source } +
+                profile.identity?.externalNames.orEmpty().map { it.source } +
+                profile.identity?.externalReputations.orEmpty().map { it.source }).distinct()
+            if (sources.isEmpty()) Text("Результатов проверки пока нет")
+            sources.forEach { source ->
+                val provider = profile.providers.firstOrNull { it.source == source }
+                val name = profile.identity?.externalNames?.firstOrNull { it.source == source }
+                val reputation = profile.identity?.externalReputations?.firstOrNull { it.source == source }
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(providerLabel(source), style = MaterialTheme.typography.titleMedium)
+                    if (name != null) Text("Сохранённое имя: ${name.value}")
+                    if (reputation != null) Text(if (reputation.isSpam) "Сохранено предупреждение о спаме" else "Сохранены сведения о репутации без отметки спама")
+                    if (provider != null) {
+                        Text("Последняя попытка: ${providerResultLabel(provider)}${if (provider.fromCache) " · из кэша" else ""}")
+                        provider.checkedAt?.let { Text("Проверено: ${formatProfileDateTime(it)}") }
+                        provider.nextAttemptAt?.takeIf { it != Long.MAX_VALUE }?.let { Text("Повторить после ${formatProfileDateTime(it)}") }
+                    }
+                    HorizontalDivider()
+                }
+            }
+            Text("При проверке номер передаётся выбранному источнику и PhoneBlock. Внешняя оценка спама служит предупреждением.", style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -560,10 +528,6 @@ internal fun profileProviderStatusText(
     }
     return if (provider.fromCache) "$status · Из кэша" else status
 }
-
-private fun formatProfileTime(timestamp: Long): String =
-    java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT)
-        .format(java.util.Date(timestamp))
 
 private fun Context.startSafeProfile(intent: Intent) {
     try { startActivity(intent) } catch (_: ActivityNotFoundException) { }
