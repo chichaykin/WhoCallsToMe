@@ -15,6 +15,14 @@ interface AppDao {
     @Query("SELECT * FROM call_records ORDER BY eventAt DESC LIMIT :limit")
     fun observeRecentCalls(limit: Int = 500): Flow<List<CallRecordEntity>>
 
+    @Query("SELECT * FROM call_records WHERE e164 = :e164 ORDER BY eventAt DESC, id DESC")
+    fun observeCallsForNumber(e164: String): Flow<List<CallRecordEntity>>
+
+    @Query("SELECT displayName FROM call_records WHERE e164 = :e164 " +
+        "AND nameSource = 'system-call-log' AND displayName IS NOT NULL " +
+        "AND TRIM(displayName) != '' ORDER BY eventAt DESC, id DESC LIMIT 1")
+    suspend fun getHistoricalCallName(e164: String): String?
+
     @Query("SELECT * FROM number_entries ORDER BY updatedAt DESC")
     fun observeNumberEntries(): Flow<List<NumberEntryEntity>>
 

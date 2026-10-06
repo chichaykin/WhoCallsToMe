@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,8 +22,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -34,6 +35,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -42,6 +44,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -60,9 +64,13 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import com.whocalltome.app.R
-import com.whocalltome.app.data.model.CallerIdentity
+import com.whocalltome.app.data.model.ContactLookupResult
+import com.whocalltome.app.data.model.LookupStatus
 import com.whocalltome.app.data.model.NumberType
 import com.whocalltome.app.data.model.PersonalAction
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -73,13 +81,26 @@ fun NumberProfileScreen(
     onRequestRole: () -> Unit,
     onBack: () -> Unit,
     onOpenExisting: (String) -> Unit,
+    contactsPermissionStatus: PermissionUiStatus,
+    onRequestContactsPermission: () -> Unit,
+    onOpenAppSettings: () -> Unit,
 ) {
     val largeText = LocalDensity.current.fontScale >= 1.3f
+    val scrollState = key(number) { rememberLazyListState() }
+    var historyExpanded by rememberSaveable(number) { mutableStateOf(false) }
+    val profileNumber = remember(number) { viewModel.normalizeNumber(number) ?: number }
     val records by viewModel.personalNumbers.collectAsState()
-    val lookup by viewModel.lookupState.collectAsState()
-    val record = records.firstOrNull { it.e164 == number }
-    var identity by remember(number) { mutableStateOf<CallerIdentity?>(null) }
-    var numberInput by rememberSaveable(number) { mutableStateOf(number) }
+    val profileState by viewModel.numberProfileState.collectAsState()
+    val historyState by viewModel.numberCallHistory.collectAsState()
+    val history = historyState.takeIf { it.e164 == profileNumber }
+        ?: NumberCallHistoryUiState(e164 = profileNumber, isLoading = true)
+    val profile = profileState.takeIf { it.e164 == profileNumber }
+        ?: NumberProfileUiState(e164 = profileNumber, isLoadingLocal = number.isNotBlank())
+    val identity = profile.identity
+    val record = records.firstOrNull { it.e164 == profileNumber }
+    val savedName = record?.personalName ?: identity?.personalName.orEmpty()
+    val savedType = record?.numberType ?: identity?.numberType ?: NumberType.UNSPECIFIED
+    var numberInput by rememberSaveable(number) { mutableStateOf(profileNumber) }
     var draftName by rememberSaveable(number) { mutableStateOf("") }
     var draftType by rememberSaveable(number) { mutableStateOf(NumberType.UNSPECIFIED) }
     var editing by rememberSaveable(number) { mutableStateOf(number.isBlank()) }
@@ -89,29 +110,38 @@ fun NumberProfileScreen(
     var showDiscard by remember(number) { mutableStateOf(false) }
     var error by remember(number) { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(number, records, lookup) {
-        if (number.isNotBlank()) viewModel.loadIdentity(number) { identity = it }
+    LaunchedEffect(number, contactsPermissionStatus) {
+        if (number.isNotBlank()) {
+            viewModel.openNumberProfile(number)
+            viewModel.refreshNumberProfile()
+        } else viewModel.closeNumberProfile()
     }
-    LaunchedEffect(record?.personalName, record?.numberType) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, number) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && number.isNotBlank()) {
+                viewModel.openNumberProfile(number)
+                viewModel.refreshNumberProfile()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(savedName, savedType) {
         if (!editing) {
-            draftName = record?.personalName.orEmpty()
-            draftType = record?.numberType ?: NumberType.UNSPECIFIED
+            draftName = savedName
+            draftType = savedType
         }
     }
-    LaunchedEffect(identity?.e164, identity?.displayName, identity?.nameSource) {
-        if (number.isNotBlank() && identity != null && identity?.displayName == null && record?.personalName.isNullOrBlank()) {
-            editing = true
-        }
-    }
-
     val actualName = identity?.displayName
-    val isContact = identity?.nameSource == "contacts"
+    val isContact = profile.isContact
+    val leaveProfile = { viewModel.closeNumberProfile(); onBack() }
     val blocked = (record?.action ?: identity?.personalAction) == PersonalAction.BLOCK
     val spam = record?.personalSpam ?: identity?.personalSpam ?: false
     val dirty = if (number.isBlank()) {
         numberInput.isNotBlank() || draftName.isNotBlank() || draftType != NumberType.UNSPECIFIED
     } else {
-        draftName.trim() != record?.personalName.orEmpty() || draftType != (record?.numberType ?: NumberType.UNSPECIFIED)
+        draftName.trim() != savedName || draftType != savedType
     }
     val save: () -> Unit = {
         val normalized = viewModel.normalizeNumber(numberInput)
@@ -131,7 +161,7 @@ fun NumberProfileScreen(
                         showDiscard = false
                         editing = false
                         if (number.isBlank()) onOpenExisting(normalized)
-                        else if (leaveAfterSave) onBack()
+                        else if (leaveAfterSave) leaveProfile()
                     },
                     onError = { saving = false; error = "Не удалось сохранить номер. Попробуйте ещё раз" },
                 )
@@ -139,7 +169,7 @@ fun NumberProfileScreen(
         }
     }
     val back: () -> Unit = {
-        if (editing && dirty) showDiscard = true else onBack()
+        if (editing && dirty) showDiscard = true else leaveProfile()
     }
     BackHandler(onBack = back)
 
@@ -156,165 +186,222 @@ fun NumberProfileScreen(
             )
         },
     ) { padding ->
-        Column(
-            Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            state = scrollState,
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            if (number.isBlank()) {
-                OutlinedTextField(
-                    value = numberInput,
-                    onValueChange = { numberInput = it; error = null },
-                    label = { Text("Номер телефона") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                    isError = error != null,
-                    supportingText = error?.let { message -> { Text(message) } },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            } else {
-                BoxWithConstraints(Modifier.fillMaxWidth()) {
-                    val compactHeader = maxWidth < 360.dp || largeText
-                    val typeLabel = when (record?.numberType ?: identity?.numberType) {
-                        NumberType.PERSONAL -> "Личный"
-                        NumberType.BUSINESS -> "Бизнес"
-                        else -> null
-                    }
-                    val blockLabel = if (blocked) {
-                        if (roleHeld) "Заблокирован" else "Блокировка настроена"
-                    } else null
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(16.dp),
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                        ) {
-                            Box(
-                                Modifier.size(64.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    painter = painterResource(
-                                        if ((record?.numberType ?: identity?.numberType) == NumberType.BUSINESS) R.drawable.ic_business
-                                        else R.drawable.ic_person,
-                                    ),
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    modifier = Modifier.size(32.dp),
-                                )
+            item(key = "profile-details") {
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    if (number.isBlank()) {
+                        OutlinedTextField(
+                            value = numberInput,
+                            onValueChange = { numberInput = it; error = null },
+                            label = { Text("Номер телефона") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                            isError = error != null,
+                            supportingText = error?.let { message -> { Text(message) } },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    } else {
+                        BoxWithConstraints(Modifier.fillMaxWidth()) {
+                            val compactHeader = maxWidth < 360.dp || largeText
+                            val typeLabel = when (record?.numberType ?: identity?.numberType) {
+                                NumberType.PERSONAL -> "Личный"
+                                NumberType.BUSINESS -> "Бизнес"
+                                else -> null
                             }
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    actualName ?: "Неизвестный номер",
-                                    style = MaterialTheme.typography.headlineSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                if (!compactHeader) {
+                            val blockLabel = if (blocked) {
+                                if (roleHeld) "Заблокирован" else "Блокировка настроена"
+                            } else null
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                ) {
+                                    Box(
+                                        Modifier.size(64.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Icon(
+                                            painter = painterResource(
+                                                if ((record?.numberType ?: identity?.numberType) == NumberType.BUSINESS) R.drawable.ic_business
+                                                else R.drawable.ic_person,
+                                            ),
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            modifier = Modifier.size(32.dp),
+                                        )
+                                    }
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            actualName ?: when {
+                                                profile.isLoadingLocal -> "Загружаем данные…"
+                                                profile.localError != null -> "Данные недоступны"
+                                                isContact -> "Контакт без имени"
+                                                identity?.contact == ContactLookupResult.PermissionRequired -> "Нет доступа к контактам"
+                                                identity?.contact == ContactLookupResult.ReadError -> "Контакты недоступны"
+                                                else -> "Неизвестный номер"
+                                            },
+                                            style = MaterialTheme.typography.headlineSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        if (!compactHeader) {
+                                            Text(number, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                                            if (blockLabel != null) Text(blockLabel, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
+                                            if (typeLabel != null) Text(typeLabel, style = MaterialTheme.typography.labelLarge)
+                                        }
+                                    }
+                                }
+                                if (compactHeader) {
                                     Text(number, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                                     if (blockLabel != null) Text(blockLabel, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
                                     if (typeLabel != null) Text(typeLabel, style = MaterialTheme.typography.labelLarge)
                                 }
                             }
                         }
-                        if (compactHeader) {
-                            Text(number, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                            if (blockLabel != null) Text(blockLabel, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
-                            if (typeLabel != null) Text(typeLabel, style = MaterialTheme.typography.labelLarge)
+                    }
+
+                    if (number.isNotBlank() && profile.isLoadingLocal) {
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
+                    if (number.isNotBlank() && profile.localError != null) {
+                        Text(profile.localError, color = MaterialTheme.colorScheme.error)
+                        if (!profile.isInvalidNumber) TextButton(onClick = viewModel::refreshNumberProfile) { Text("Повторить загрузку") }
+                    }
+                    if (number.isNotBlank() && identity?.contact == ContactLookupResult.PermissionRequired) {
+                        Card {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Нужен доступ к телефонным контактам, чтобы показать имя")
+                                TextButton(onClick = if (contactsPermissionStatus == PermissionUiStatus.SETTINGS_REQUIRED) onOpenAppSettings else onRequestContactsPermission) {
+                                    Text(if (contactsPermissionStatus == PermissionUiStatus.SETTINGS_REQUIRED) "Открыть настройки" else "Разрешить доступ")
+                                }
+                            }
                         }
                     }
-                }
-            }
+                    if (number.isNotBlank() && identity?.contact == ContactLookupResult.ReadError) {
+                        Text("Не удалось прочитать телефонные контакты", color = MaterialTheme.colorScheme.error)
+                        TextButton(onClick = viewModel::refreshNumberProfile) { Text("Повторить") }
+                    }
+                    if (number.isNotBlank() && actualName == null && profile.historicalName != null) {
+                        Column {
+                            Text("Имя в журнале звонков", style = MaterialTheme.typography.labelLarge)
+                            Text(profile.historicalName)
+                        }
+                    }
 
-            if (!isContact && (editing || number.isBlank())) {
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
-                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("Как сохранить номер", style = MaterialTheme.typography.titleMedium)
-                        OutlinedTextField(
-                            value = draftName,
-                            onValueChange = { draftName = it },
-                            label = { Text("Имя или название компании") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Text("Тип номера", style = MaterialTheme.typography.labelLarge)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf(NumberType.PERSONAL to "Личный", NumberType.BUSINESS to "Бизнес").forEach { (type, label) ->
-                                FilterChip(
-                                    selected = draftType == type,
-                                    onClick = { draftType = if (draftType == type) NumberType.UNSPECIFIED else type },
-                                    label = { Text(label) },
+                    if (!isContact && (number.isBlank() || (editing && identity != null))) {
+                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+                            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Text("Имя в приложении", style = MaterialTheme.typography.titleMedium)
+                                OutlinedTextField(
+                                    value = draftName,
+                                    onValueChange = { draftName = it },
+                                    label = { Text("Имя или название компании") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
                                 )
+                                Text("Тип номера", style = MaterialTheme.typography.labelLarge)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    listOf(NumberType.PERSONAL to "Личный", NumberType.BUSINESS to "Бизнес").forEach { (type, label) ->
+                                        FilterChip(
+                                            selected = draftType == type,
+                                            onClick = { draftType = if (draftType == type) NumberType.UNSPECIFIED else type },
+                                            label = { Text(label) },
+                                        )
+                                    }
+                                }
+                                Button(onClick = save, enabled = !saving && (number.isBlank() || dirty), modifier = Modifier.fillMaxWidth()) {
+                                    Text(if (saving) "Сохраняем…" else "Сохранить")
+                                }
                             }
                         }
-                        Button(onClick = save, enabled = !saving && (number.isBlank() || dirty), modifier = Modifier.fillMaxWidth()) {
-                            Text(if (saving) "Сохраняем…" else "Сохранить")
+                    } else if (!isContact && number.isNotBlank() && identity != null) {
+                        Column {
+                            TextButton(onClick = { draftName = savedName; draftType = savedType; editing = true }) {
+                                Text(if (savedName.isBlank()) "Сохранить имя в приложении" else "Изменить имя и тип")
+                            }
+                            if (savedName.isNotBlank()) {
+                                Text("Имя сохранено в приложении", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                     }
-                }
-            } else if (!isContact && number.isNotBlank()) {
-                Column {
-                    TextButton(onClick = { draftName = record?.personalName.orEmpty(); draftType = record?.numberType ?: NumberType.UNSPECIFIED; editing = true }) {
-                        Text("Изменить имя и тип")
+                    if (isContact && number.isNotBlank()) {
+                        Text("Из контактов", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    if (!record?.personalName.isNullOrBlank()) {
-                        Text("Имя сохранено в приложении", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+                    if (error != null && number.isNotBlank()) Text(error!!, color = MaterialTheme.colorScheme.error)
                 }
             }
-            if (isContact && number.isNotBlank()) {
-                Text("Имя из телефонных контактов", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            if (error != null && number.isNotBlank()) Text(error!!, color = MaterialTheme.colorScheme.error)
 
-            if (number.isNotBlank()) {
-                ProfileActions(number, actualName, isContact, viewModel)
-                HorizontalDivider()
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Настройки звонков", style = MaterialTheme.typography.titleMedium)
-                        ProfileSwitch(
-                            title = "Блокировать звонки",
-                            detail = if (blocked) {
-                                if (roleHeld) "Входящие звонки отклоняются" else "Блокировка включена в приложении"
-                            } else "Входящие звонки разрешены",
-                            checked = blocked,
-                            enabled = !togglingBlock,
-                        ) { checked ->
-                            togglingBlock = true
-                            viewModel.setAction(number, if (checked) PersonalAction.BLOCK else PersonalAction.DEFAULT) {
-                                togglingBlock = false
-                            }
-                        }
-                        if (!roleHeld) {
-                            Text("Для блокировки включите определение звонков", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            TextButton(onClick = onRequestRole) { Text("Включить") }
-                        }
+            if (number.isNotBlank() && !profile.isInvalidNumber) {
+                item(key = "profile-actions") {
+                    ProfileActions(profileNumber, actualName, isContact, (identity?.contact as? ContactLookupResult.Found)?.lookupUri)
+                }
+                numberCallHistorySection(
+                    history = history,
+                    expanded = historyExpanded,
+                    onToggle = { historyExpanded = !historyExpanded },
+                    onRetry = viewModel::retryNumberCallHistory,
+                )
+                item(key = "profile-lookup") {
+                    ProfileLookupCard(profile, onCheck = { viewModel.checkNumberProfile() }, onRefresh = { viewModel.checkNumberProfile(force = true) })
+                }
+                item(key = "profile-settings") {
+                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         HorizontalDivider()
-                        ProfileSwitch("Пометить как спам", "Предупреждать о спаме", spam, !togglingSpam) { checked ->
-                            togglingSpam = true
-                            viewModel.markSpam(number, checked) { togglingSpam = false }
+                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Настройки звонков", style = MaterialTheme.typography.titleMedium)
+                                ProfileSwitch(
+                                    title = "Блокировать звонки",
+                                    detail = if (blocked) {
+                                        if (roleHeld) "Входящие звонки отклоняются" else "Блокировка включена в приложении"
+                                    } else "Входящие звонки разрешены",
+                                    checked = blocked,
+                                    enabled = !togglingBlock && identity != null && !profile.isLoadingLocal,
+                                ) { checked ->
+                                    togglingBlock = true
+                                    viewModel.setAction(profileNumber, if (checked) PersonalAction.BLOCK else PersonalAction.DEFAULT) {
+                                        togglingBlock = false
+                                    }
+                                }
+                                if (!roleHeld) {
+                                    Text("Для блокировки включите определение звонков", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    TextButton(onClick = onRequestRole) { Text("Включить") }
+                                }
+                                HorizontalDivider()
+                                ProfileSwitch("Пометить как спам", "Предупреждать о спаме", spam, !togglingSpam && identity != null && !profile.isLoadingLocal) { checked ->
+                                    togglingSpam = true
+                                    viewModel.markSpam(profileNumber, checked) { togglingSpam = false }
+                                }
+                            }
                         }
                     }
                 }
                 if (identity?.externalSpam == true) {
-                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
-                        Column(Modifier.padding(16.dp)) {
-                            Text(
-                                "Возможный спам",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                            )
-                            Text(
-                                "По данным: ${identity?.externalReputations?.filter { it.isSpam }?.joinToString { providerLabel(it.source) }?.ifBlank { identity?.externalSource?.let(::providerLabel) ?: "внешнего источника" }}",
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                            )
+                    item(key = "profile-spam") {
+                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                            Column(Modifier.padding(16.dp)) {
+                                Text(
+                                    "Возможный спам",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                )
+                                Text(
+                                    "По данным: ${identity?.externalReputations?.filter { it.isSpam }?.joinToString { providerLabel(it.source) }?.ifBlank { identity?.externalSource?.let(::providerLabel) ?: "внешнего источника" }}",
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                )
+                            }
                         }
                     }
                 }
             }
-            Spacer(Modifier.height(16.dp))
+            item(key = "profile-bottom") { Spacer(Modifier.height(16.dp)) }
         }
     }
     if (showDiscard) {
@@ -323,13 +410,13 @@ fun NumberProfileScreen(
             title = { Text("Сохранить изменения?") },
             text = { Text("Имя или тип номера ещё не сохранены") },
             confirmButton = { TextButton(onClick = save, enabled = !saving) { Text("Сохранить") } },
-            dismissButton = { TextButton(onClick = { showDiscard = false; onBack() }, enabled = !saving) { Text("Не сохранять") } },
+            dismissButton = { TextButton(onClick = { showDiscard = false; leaveProfile() }, enabled = !saving) { Text("Не сохранять") } },
         )
     }
 }
 
 @Composable
-private fun ProfileActions(number: String, name: String?, isContact: Boolean, viewModel: AppViewModel) {
+private fun ProfileActions(number: String, name: String?, isContact: Boolean, contactUri: String?) {
     val context = LocalContext.current
     val call = { context.startSafeProfile(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$number"))) }
     val whatsapp = {
@@ -343,7 +430,7 @@ private fun ProfileActions(number: String, name: String?, isContact: Boolean, vi
     }
     val sms = { context.startSafeProfile(Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:$number"))) }
     val contact = {
-        val uri = if (isContact) viewModel.findContactUri(number) else null
+        val uri = if (isContact) contactUri?.let(Uri::parse) else null
         val intent = when {
             uri != null -> Intent(Intent.ACTION_VIEW, uri)
             isContact -> Intent(Intent.ACTION_VIEW, ContactsContract.Contacts.CONTENT_URI)
@@ -410,6 +497,73 @@ private fun ProfileSwitch(title: String, detail: String, checked: Boolean, enabl
         Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
 }
+
+@Composable
+private fun ProfileLookupCard(profile: NumberProfileUiState, onCheck: () -> Unit, onRefresh: () -> Unit) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Проверка по базам", style = MaterialTheme.typography.titleMedium)
+            when {
+                profile.isLoadingLocal -> Text("Сначала загружаем данные на устройстве")
+                profile.isChecking -> {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Text("Проверяем номер…")
+                }
+                !profile.hasChecked -> Text("Нажмите «Проверить по базам», чтобы получить актуальный результат")
+            }
+            if (profile.hasPartialFailure) {
+                Text("Получены данные не от всех источников", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            profile.identity?.externalNames?.forEach { name ->
+                Text("${providerLabel(name.source)} · ${name.value}")
+            }
+            profile.identity?.externalReputations?.forEach { reputation ->
+                Text("${providerLabel(reputation.source)} · ${if (reputation.isSpam) "Возможный спам" else "Репутация найдена"}")
+                reputation.score?.let { Text("Оценка источника: $it") }
+            }
+            profile.providers.forEach { provider ->
+                Text("${providerLabel(provider.source)} · ${profileProviderStatusText(provider, profile.isChecking)}")
+                provider.checkedAt?.let { Text("Проверено: ${formatProfileTime(it)}", style = MaterialTheme.typography.bodySmall) }
+                provider.nextAttemptAt?.takeIf { it != Long.MAX_VALUE }?.let {
+                    Text("Повторная попытка доступна: ${formatProfileTime(it)}", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            if (profile.providers.isEmpty() && profile.identity?.checkedAt != null) {
+                Text("Сохранённые данные · ${formatProfileTime(profile.identity.checkedAt)}", style = MaterialTheme.typography.bodySmall)
+            }
+            profile.lookupError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            Text(
+                "При проверке номер передаётся выбранному источнику и PhoneBlock. Внешняя оценка спама служит предупреждением.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(
+                onClick = if (profile.hasChecked) onRefresh else onCheck,
+                enabled = profile.identity != null && !profile.isLoadingLocal && !profile.isChecking,
+            ) { Text(if (profile.hasChecked) "Обновить" else "Проверить по базам") }
+        }
+    }
+}
+
+internal fun profileProviderStatusText(
+    provider: com.whocalltome.app.data.model.ProviderLookupStatus,
+    isChecking: Boolean,
+): String {
+    val status = when (provider.status) {
+        null -> if (isChecking) "Проверяется" else "Проверка не завершена"
+        LookupStatus.FOUND -> "Данные найдены"
+        LookupStatus.NOT_FOUND -> "Данных нет"
+        LookupStatus.NOT_CONFIGURED -> "Источник не настроен"
+        LookupStatus.NETWORK_ERROR -> "Нет сети"
+        LookupStatus.QUOTA_EXHAUSTED -> "Лимит запросов"
+        LookupStatus.PROVIDER_ERROR -> "Ошибка источника"
+    }
+    return if (provider.fromCache) "$status · Из кэша" else status
+}
+
+private fun formatProfileTime(timestamp: Long): String =
+    java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT)
+        .format(java.util.Date(timestamp))
 
 private fun Context.startSafeProfile(intent: Intent) {
     try { startActivity(intent) } catch (_: ActivityNotFoundException) { }

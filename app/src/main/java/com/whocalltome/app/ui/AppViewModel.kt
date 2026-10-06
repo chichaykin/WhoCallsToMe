@@ -1,7 +1,6 @@
 package com.whocalltome.app.ui
 
 import android.app.Application
-import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.whocalltome.app.appContainer
@@ -28,6 +27,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
@@ -36,9 +36,49 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-class AppViewModel(application: Application) : AndroidViewModel(application) {
+class AppViewModel internal constructor(
+    application: Application,
+    private val repository: AppCallerIdentityRepository,
+) : AndroidViewModel(application) {
+    constructor(application: Application) : this(application, application.appContainer.repository)
+
     private val container = application.appContainer
-    private val repository = container.repository
+    private val profileController = NumberProfileController(
+        scope = viewModelScope,
+        repository = repository,
+        historicalName = repository::historicalCallName,
+        recordManualLookup = repository::recordManualLookup,
+    )
+    val numberProfileState = profileController.state
+    private val historyRetry = MutableStateFlow(0L)
+    val numberCallHistory = observeNumberCallHistory(
+        selectedNumbers = numberProfileState.map { if (it.isInvalidNumber) null else it.e164 },
+        retry = historyRetry,
+        callsForNumber = repository::observeCallsForNumber,
+        entries = repository.numberEntries,
+        overrides = repository.overrides,
+    ).flowOn(Dispatchers.IO).stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        NumberCallHistoryUiState(),
+    )
+
+    fun retryNumberCallHistory() { historyRetry.value++ }
+
+    fun openNumberProfile(rawNumber: String) {
+        val e164 = normalizeNumber(rawNumber)
+        if (e164 == null) {
+            profileController.rejectNumber(rawNumber)
+            return
+        }
+        profileController.open(e164)
+    }
+
+    fun refreshNumberProfile() = profileController.refresh()
+
+    fun closeNumberProfile() = profileController.close()
+
+    fun checkNumberProfile(force: Boolean = false) = profileController.check(force = force)
 
     val recentCalls: StateFlow<List<CallRecordEntity>> = combine(
         repository.recentCalls,
@@ -195,8 +235,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun findContactUri(e164: String): Uri? = repository.findContactUri(e164)
-
     fun normalizeNumber(rawNumber: String): String? = container.numberNormalizer.normalize(rawNumber)
 
     fun personalNumber(e164: String): PersonalNumberUi? =
@@ -244,6 +282,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 repository.savePersonalNumber(e164, personalName, numberType)
             }.onSuccess {
                 _message.value = "Номер сохранён"
+                profileController.refresh(allowAutomatic = false)
                 onSaved?.invoke()
             }.onFailure {
                 _message.value = it.message ?: "Не удалось сохранить номер"
@@ -261,6 +300,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     PersonalAction.DEFAULT -> "Блокировка выключена"
                 }
                 onComplete?.invoke(true)
+                profileController.refresh(allowAutomatic = false)
             }.onFailure {
                 _message.value = "Не удалось изменить блокировку"
                 onComplete?.invoke(false)
@@ -272,6 +312,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             runCatching { repository.markPersonalSpam(e164, isSpam) }.onSuccess {
                 _message.value = if (isSpam) "Пометка спама включена" else "Пометка спама снята"
+                profileController.refresh(allowAutomatic = false)
                 onComplete?.invoke(true)
             }.onFailure {
                 _message.value = "Не удалось изменить пометку спама"

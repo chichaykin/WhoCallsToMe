@@ -165,6 +165,7 @@ interface LookupProviderCatalog {
     fun provider(id: String): NumberLookupProvider?
     fun configuredProviders(): List<NumberLookupProvider>
     fun automaticProviders(): List<NumberLookupProvider>
+    fun automaticProviderIds(): List<String> = automaticProviders().map { it.id }
 }
 
 class LookupProviderRegistry(
@@ -190,6 +191,9 @@ class LookupProviderRegistry(
         listOfNotNull(provider(preferences.lookupProvider), phoneBlock)
             .distinctBy(NumberLookupProvider::id)
             .filter { secrets.contains(secretKey(it.id)) }
+
+    override fun automaticProviderIds(): List<String> =
+        listOf(preferences.lookupProvider, phoneBlock.id).distinct()
 
     private fun secretKey(providerId: String): String = when (providerId) {
         ipqs.id -> SecretStore.IPQS_KEY

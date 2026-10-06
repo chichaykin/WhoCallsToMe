@@ -1,6 +1,5 @@
 package com.whocalltome.app.data.repository
 
-import android.net.Uri
 import com.whocalltome.app.data.db.AppDao
 import com.whocalltome.app.data.db.CallRecordEntity
 import com.whocalltome.app.data.db.LookupEvidenceEntity
@@ -19,7 +18,8 @@ import com.whocalltome.app.data.model.LookupUpdate
 import com.whocalltome.app.data.model.ProviderLookupStatus
 import com.whocalltome.app.data.model.PersonalAction
 import com.whocalltome.app.data.model.NumberType
-import com.whocalltome.app.data.phone.ContactLookup
+import com.whocalltome.app.data.phone.PhoneContactLookup
+import com.whocalltome.app.data.model.ContactLookupResult
 import com.whocalltome.app.data.remote.LookupProviderCatalog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
@@ -57,7 +57,7 @@ internal suspend fun lookupProvidersInParallel(
 
 class AppCallerIdentityRepository(
     private val dao: AppDao,
-    private val contactLookup: ContactLookup,
+    private val contactLookup: PhoneContactLookup,
     private val providers: LookupProviderCatalog,
 ) : CallerIdentityRepository {
     private val lookupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -84,6 +84,7 @@ class AppCallerIdentityRepository(
     }
 
     val recentCalls: Flow<List<CallRecordEntity>> = dao.observeRecentCalls()
+    fun observeCallsForNumber(e164: String): Flow<List<CallRecordEntity>> = dao.observeCallsForNumber(e164)
     val numberEntries: Flow<List<NumberEntryEntity>> = dao.observeNumberEntries()
     val overrides: Flow<List<UserOverrideEntity>> = dao.observeOverrides()
     val manualLookups: Flow<List<ManualLookupEntity>> = dao.observeManualLookups()
@@ -96,7 +97,7 @@ class AppCallerIdentityRepository(
         dao.clearManualLookupHistory()
     }
 
-    fun findContactUri(e164: String): Uri? = contactLookup.findContactUri(e164)
+    suspend fun historicalCallName(e164: String): String? = dao.getHistoricalCallName(e164)
 
     override suspend fun resolveLocal(e164: String): CallerIdentity {
         val override = dao.getOverride(e164)
@@ -104,7 +105,8 @@ class AppCallerIdentityRepository(
         val action = override?.action ?: PersonalAction.DEFAULT
         val personalSpam = override?.personalSpam == true
         val hasPersonalRecord = override != null || entry != null
-        val contactName = contactLookup.findDisplayName(e164)
+        val contact = contactLookup.findContact(e164)
+        val contactName = (contact as? ContactLookupResult.Found)?.displayName?.takeIf(String::isNotBlank)
 
         val now = System.currentTimeMillis()
         val evidence = dao.getEvidence(e164)
@@ -136,14 +138,14 @@ class AppCallerIdentityRepository(
         }
         val sources = listOfNotNull(
             if (hasPersonalRecord) "personal" else null,
-            if (nameSource == "contacts") "contacts" else null,
+            if (contact is ContactLookupResult.Found) "contacts" else null,
             if (nameSource != "personal" && nameSource != "contacts") nameSource else null,
             *externalReputations.map(ExternalReputation::source).toTypedArray(),
         ).distinct()
         val externalSpam = spamEvidence != null
         val category = when {
             personalSpam || externalSpam -> CallerCategory.SPAM
-            nameSource == "contacts" -> CallerCategory.CONTACT
+            contact is ContactLookupResult.Found -> CallerCategory.CONTACT
             personalName != null -> CallerCategory.PERSONAL
             nameEvidence != null -> CallerCategory.INTERNET
             else -> CallerCategory.UNKNOWN
@@ -173,6 +175,8 @@ class AppCallerIdentityRepository(
             externalNames = externalNames,
             externalReputations = externalReputations,
             numberType = entry?.numberType ?: NumberType.UNSPECIFIED,
+            contact = contact,
+            personalName = personalName,
         )
     }
 
@@ -215,7 +219,7 @@ class AppCallerIdentityRepository(
     ): Flow<LookupUpdate> = flow {
         val local = resolveLocal(e164)
         emit(LookupUpdate(local))
-        if (!allowNetwork || (local.nameSource == "contacts" && !allowNetworkForContacts)) {
+        if (!allowNetwork || (local.contact is ContactLookupResult.Found && !allowNetworkForContacts)) {
             emit(LookupUpdate(local, isComplete = true))
             return@flow
         }
@@ -237,6 +241,12 @@ class AppCallerIdentityRepository(
             if (provider in needed) ProviderLookupStatus(provider.id)
             else LookupCachePolicy.cachedStatus(provider.id, evidence, now) ?: ProviderLookupStatus(provider.id)
         }.toMutableList()
+        if (!useAllConfiguredProviders) {
+            val availableIds = available.map { it.id }.toSet()
+            providers.automaticProviderIds().filterNot { it in availableIds }.forEach {
+                updates += ProviderLookupStatus(it, LookupStatus.NOT_CONFIGURED)
+            }
+        }
         if (needed.isEmpty()) {
             emit(LookupUpdate(resolveLocal(e164), updates, isComplete = true))
             return@flow
@@ -311,7 +321,7 @@ class AppCallerIdentityRepository(
             val previous = dao.getEvidence(e164).firstOrNull { it.source == result.source }
             dao.upsertEvidence(LookupCachePolicy.entityFor(result, previous))
             dao.deleteProviderState(provider.id)
-            return ProviderLookupStatus(provider.id, result.status)
+            return ProviderLookupStatus(provider.id, result.status, checkedAt = result.fetchedAt)
         }
 
         val nextAttemptAt = recordProviderFailure(provider.id, state, result)

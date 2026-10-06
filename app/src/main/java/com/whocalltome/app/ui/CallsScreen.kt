@@ -180,17 +180,22 @@ fun CallsScreen(
 }
 
 @Composable
-private fun CallRow(call: CallRecordEntity, onClick: () -> Unit) {
+internal fun CallRow(
+    call: CallRecordEntity,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+    showHistoryDetails: Boolean = false,
+) {
     val visual = call.visual()
     val warning = callWarningLabel(call)
     val spam = warning != null
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 72.dp)
             .clip(MaterialTheme.shapes.medium)
-            .clickable(onClick = onClick),
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
     ) {
         Row(
             modifier = Modifier
@@ -220,9 +225,16 @@ private fun CallRow(call: CallRecordEntity, onClick: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = callMetadata(call, visual),
+                        text = callMetadata(call, visual, showHistoryDetails),
                         style = MaterialTheme.typography.bodySmall,
                         color = if (visual.isMissed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (showHistoryDetails) {
+                    Text(
+                        text = callDateTimeLabel(call),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 if (spam) {
@@ -244,7 +256,7 @@ private fun CallRow(call: CallRecordEntity, onClick: () -> Unit) {
                     }
                 }
             }
-            Text(
+            if (!showHistoryDetails) Text(
                 text = callTimeLabel(call),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -381,8 +393,8 @@ fun callWarningLabel(call: CallRecordEntity): String? =
     if (call.category != CallerCategory.SPAM) null
     else if (call.source == "personal") "Личная отметка: спам" else "Возможный спам"
 
-private fun callMetadata(call: CallRecordEntity, visual: CallVisual): String {
-    val duration = call.durationSeconds.takeIf { it > 0 }?.let(::formatCallDuration)
+private fun callMetadata(call: CallRecordEntity, visual: CallVisual, includeMissingDuration: Boolean): String {
+    val duration = callDurationLabel(call, includeMissingDuration)
     val source = sourceLabel(call)
     return listOfNotNull(visual.label, source, duration).joinToString(" · ")
 }
@@ -392,6 +404,16 @@ fun callTimeLabel(call: CallRecordEntity, zone: ZoneId = ZoneId.systemDefault())
         .atZone(zone)
         .toLocalTime()
         .format(DateTimeFormatter.ofPattern("HH:mm"))
+
+internal fun callDateTimeLabel(call: CallRecordEntity, zone: ZoneId = ZoneId.systemDefault()): String =
+    Instant.ofEpochMilli(call.eventAt).atZone(zone).format(DateTimeFormatter.ofPattern("dd.MM.yyyy · HH:mm"))
+
+internal fun callDurationLabel(call: CallRecordEntity, includeMissing: Boolean = false): String? = when {
+    call.durationSeconds > 0 -> formatCallDuration(call.durationSeconds)
+    !includeMissing -> null
+    call.durationSeconds == 0L && call.systemCallId != null -> "0 сек"
+    else -> "Длительность неизвестна"
+}
 
 private fun sourceLabel(call: CallRecordEntity): String? = when {
     callWarningLabel(call) != null -> null

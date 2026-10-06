@@ -18,6 +18,13 @@ enum class PersonalAction {
 
 enum class NumberType { UNSPECIFIED, PERSONAL, BUSINESS }
 
+sealed interface ContactLookupResult {
+    data class Found(val displayName: String?, val lookupUri: String?) : ContactLookupResult
+    data object NotFound : ContactLookupResult
+    data object PermissionRequired : ContactLookupResult
+    data object ReadError : ContactLookupResult
+}
+
 enum class LookupStatus {
     FOUND,
     NOT_FOUND,
@@ -66,6 +73,7 @@ data class ProviderLookupStatus(
     val message: String? = null,
     val nextAttemptAt: Long? = null,
     val fromCache: Boolean = false,
+    val checkedAt: Long? = null,
 )
 
 data class FeedSyncResult(
@@ -94,6 +102,8 @@ data class CallerIdentity(
     val externalNames: List<ExternalName> = emptyList(),
     val externalReputations: List<ExternalReputation> = emptyList(),
     val numberType: NumberType = NumberType.UNSPECIFIED,
+    val contact: ContactLookupResult = ContactLookupResult.NotFound,
+    val personalName: String? = null,
 ) {
     val shouldBlock: Boolean
         get() = personalAction == PersonalAction.BLOCK

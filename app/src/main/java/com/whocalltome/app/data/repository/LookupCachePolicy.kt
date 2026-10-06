@@ -14,7 +14,7 @@ internal object LookupCachePolicy {
         ?: sourceOrder.size
 
     fun selectDisplayName(contactName: String?, names: List<ExternalName>, personalName: String? = null): String? =
-        contactName ?: personalName?.takeIf(String::isNotBlank) ?: names.firstOrNull()?.value
+        contactName?.takeIf(String::isNotBlank) ?: personalName?.takeIf(String::isNotBlank) ?: names.firstOrNull()?.value
 
     fun providersNeedingLookup(
         providers: List<NumberLookupProvider>,
@@ -37,7 +37,7 @@ internal object LookupCachePolicy {
     fun cachedStatus(source: String, evidence: List<LookupEvidenceEntity>, now: Long): ProviderLookupStatus? {
         val current = evidence.firstOrNull { it.source == source } ?: return null
         if (!isCurrent(current, now)) return null
-        return ProviderLookupStatus(source, LookupStatus.valueOf(current.status), fromCache = true)
+        return ProviderLookupStatus(source, LookupStatus.valueOf(current.status), fromCache = true, checkedAt = current.fetchedAt)
     }
 
     fun entityFor(

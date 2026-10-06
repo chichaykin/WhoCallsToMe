@@ -256,6 +256,9 @@ fun AppContent(
                     onRequestRole = onRequestRole,
                     onBack = { selectedNumber = null },
                     onOpenExisting = { selectedNumber = it },
+                    contactsPermissionStatus = permissionStatuses[Manifest.permission.READ_CONTACTS] ?: PermissionUiStatus.NOT_REQUESTED,
+                    onRequestContactsPermission = { onRequestPermission(Manifest.permission.READ_CONTACTS) },
+                    onOpenAppSettings = onOpenAppSettings,
                 )
             } else {
             tabStateHolder.SaveableStateProvider(selectedTab) {
